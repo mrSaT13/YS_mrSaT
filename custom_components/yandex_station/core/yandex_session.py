@@ -38,8 +38,8 @@ except Exception:
 
 # Импорт библиотеки для авторизации
 try:
-    from ya_passport_auth import PassportClient, Credentials
-    from ya_passport_auth.exceptions import QRTimeoutError, YaPassportError
+    from ya_passport_auth import PassportClient, ClientConfig, Credentials
+    from ya_passport_auth.exceptions import QRTimeoutError, QRPendingError, YaPassportError
     YA_PASSPORT_AVAILABLE = True
 except ImportError:
     YA_PASSPORT_AVAILABLE = False
@@ -130,6 +130,7 @@ class YandexSession(BasicSession):
     # Для QR-авторизации через ya-passport-auth
     _passport_client = None
     _qr_session = None
+    _qr_start_time: float = 0
 
     def __init__(
         self,
@@ -237,10 +238,27 @@ class YandexSession(BasicSession):
         return await self.login_cookies()
 
     async def get_qr(self) -> str:
-        """Get link to QR-code auth."""
-        # Всегда используем надежный BFF метод
-        _LOGGER.debug("Getting QR code via BFF endpoints")
-        return await self._get_qr_legacy()
+        """Get link to QR-code auth using ya-passport-auth library."""
+        if not YA_PASSPORT_AVAILABLE:
+            _LOGGER.error("ya-passport-auth library not available")
+            raise Exception("ya-passport-auth library required for QR auth")
+        
+        try:
+            _LOGGER.debug("Initializing PassportClient with existing session")
+            # Инициализируем с существующей сессией
+            self._passport_client = PassportClient(session=self._session)
+            
+            # Начинаем QR логин
+            self._qr_session = await self._passport_client.start_qr_login()
+            self._qr_start_time = time.time()
+            
+            qr_url = self._qr_session.qr_url
+            _LOGGER.debug(f"QR session started, URL: {qr_url}")
+            return qr_url
+            
+        except Exception as e:
+            _LOGGER.error(f"QR initialization failed: {e}", exc_info=True)
+            raise
 
     async def _get_qr_legacy(self) -> str:
         """Stable legacy QR method using BFF endpoints."""
@@ -307,12 +325,42 @@ class YandexSession(BasicSession):
         return qr_url
 
     async def login_qr(self) -> LoginResponse:
-        """Poll QR confirmation."""
-        # Всегда используем BFF метод
-        return await self._login_qr_legacy()
+        """Poll QR confirmation using ya-passport-auth library."""
+        if not self._passport_client or not self._qr_session:
+            _LOGGER.error("QR session not initialized - call get_qr() first")
+            return LoginResponse({"errors": ["qr.not_initialized"]})
+        
+        try:
+            _LOGGER.debug("Checking QR confirmation status")
+            # Проверяем статус
+            is_confirmed = await self._passport_client._qr.check_status(self._qr_session)
+            
+            if not is_confirmed:
+                _LOGGER.debug("QR not yet confirmed")
+                return LoginResponse({})
+            
+            _LOGGER.debug("QR confirmed, completing login")
+            # Получаем credentials после подтверждения
+            credentials = await self._passport_client.complete_qr_login(self._qr_session)
+            
+            _LOGGER.debug(f"QR login completed, x_token: {credentials.x_token}")
+            self.x_token = str(credentials.x_token)
+            self.music_token = str(credentials.music_token) if credentials.music_token else None
+            
+            return await self.validate_token(self.x_token)
+            
+        except QRPendingError:
+            _LOGGER.debug("QR still pending")
+            return LoginResponse({})
+        except QRTimeoutError:
+            _LOGGER.error("QR timeout")
+            return LoginResponse({"errors": ["qr.timeout"]})
+        except Exception as e:
+            _LOGGER.error(f"QR polling failed: {e}", exc_info=True)
+            return LoginResponse({"errors": [f"qr.error: {str(e)[:100]}"]})
 
     async def _login_qr_legacy(self) -> LoginResponse:
-        """Legacy QR polling method."""
+        """Fallback legacy QR polling method (for reference only)."""
         if not self.auth_payload:
             _LOGGER.error("auth_payload not set - call get_qr() first")
             return LoginResponse({"errors": ["auth.no_payload"]})
@@ -327,6 +375,7 @@ class YandexSession(BasicSession):
         
         _LOGGER.debug("QR confirmed, proceeding to cookies")
         return await self.login_cookies()
+
     async def get_sms(self):
         """Request an SMS to user phone."""
         assert self.auth_payload
