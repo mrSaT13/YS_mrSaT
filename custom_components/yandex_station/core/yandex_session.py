@@ -23,26 +23,20 @@ import logging
 import pickle
 import re
 import time
-import sys
-import os
 
 from aiohttp import ClientSession
-
-# Пытаемся добавить путь к ya_passport_auth, если он есть в рабочей директории
-try:
-    _lib_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))), "ya-passport-auth-main", "ya-passport-auth-main", "src")
-    if os.path.exists(_lib_path) and _lib_path not in sys.path:
-        sys.path.insert(0, _lib_path)
-except Exception:
-    pass
 
 # Импорт библиотеки для авторизации
 try:
     from ya_passport_auth import PassportClient, ClientConfig, Credentials
     from ya_passport_auth.exceptions import QRTimeoutError, QRPendingError, YaPassportError
     YA_PASSPORT_AVAILABLE = True
-except ImportError:
+    _LOGGER_TEMP = logging.getLogger(__name__)
+    _LOGGER_TEMP.debug("ya-passport-auth library imported successfully")
+except ImportError as e:
     YA_PASSPORT_AVAILABLE = False
+    _LOGGER_TEMP = logging.getLogger(__name__)
+    _LOGGER_TEMP.warning(f"ya-passport-auth library not available: {e}")
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -244,20 +238,25 @@ class YandexSession(BasicSession):
             raise Exception("ya-passport-auth library required for QR auth")
         
         try:
+            _LOGGER.debug(f"Session state: closed={self._session.closed}, cookies={len(self._session.cookie_jar)}")
             _LOGGER.debug("Initializing PassportClient with existing session")
+            
             # Инициализируем с существующей сессией
-            self._passport_client = PassportClient(session=self._session)
+            config = ClientConfig()
+            self._passport_client = PassportClient(session=self._session, config=config)
             
             # Начинаем QR логин
+            _LOGGER.debug("Calling start_qr_login()")
             self._qr_session = await self._passport_client.start_qr_login()
             self._qr_start_time = time.time()
             
             qr_url = self._qr_session.qr_url
-            _LOGGER.debug(f"QR session started, URL: {qr_url}")
+            _LOGGER.info(f"QR session started successfully, track_id={self._qr_session.track_id}")
+            _LOGGER.debug(f"QR URL: {qr_url}")
             return qr_url
             
         except Exception as e:
-            _LOGGER.error(f"QR initialization failed: {e}", exc_info=True)
+            _LOGGER.error(f"QR initialization failed: {type(e).__name__}: {e}", exc_info=True)
             raise
 
     async def _get_qr_legacy(self) -> str:
@@ -331,32 +330,35 @@ class YandexSession(BasicSession):
             return LoginResponse({"errors": ["qr.not_initialized"]})
         
         try:
-            _LOGGER.debug("Checking QR confirmation status")
+            _LOGGER.debug(f"Checking QR confirmation status (track_id={self._qr_session.track_id})")
+            
             # Проверяем статус
             is_confirmed = await self._passport_client._qr.check_status(self._qr_session)
             
             if not is_confirmed:
-                _LOGGER.debug("QR not yet confirmed")
+                _LOGGER.debug("QR not yet confirmed, waiting...")
                 return LoginResponse({})
             
-            _LOGGER.debug("QR confirmed, completing login")
+            _LOGGER.debug("QR confirmed! Completing login...")
+            
             # Получаем credentials после подтверждения
             credentials = await self._passport_client.complete_qr_login(self._qr_session)
             
-            _LOGGER.debug(f"QR login completed, x_token: {credentials.x_token}")
+            _LOGGER.info(f"QR login completed successfully")
             self.x_token = str(credentials.x_token)
             self.music_token = str(credentials.music_token) if credentials.music_token else None
             
+            _LOGGER.debug(f"Retrieved x_token, validating...")
             return await self.validate_token(self.x_token)
             
-        except QRPendingError:
-            _LOGGER.debug("QR still pending")
+        except QRPendingError as e:
+            _LOGGER.debug(f"QR still pending: {e}")
             return LoginResponse({})
-        except QRTimeoutError:
-            _LOGGER.error("QR timeout")
+        except QRTimeoutError as e:
+            _LOGGER.error(f"QR timeout: {e}")
             return LoginResponse({"errors": ["qr.timeout"]})
         except Exception as e:
-            _LOGGER.error(f"QR polling failed: {e}", exc_info=True)
+            _LOGGER.error(f"QR polling failed: {type(e).__name__}: {e}", exc_info=True)
             return LoginResponse({"errors": [f"qr.error: {str(e)[:100]}"]})
 
     async def _login_qr_legacy(self) -> LoginResponse:
@@ -459,26 +461,48 @@ class YandexSession(BasicSession):
             host = next(p["domain"] for p in raw if p["domain"].startswith(".yandex."))
             cookies = "; ".join([f"{p['name']}={p['value']}" for p in raw])
 
-        resp = await self._post_json(
-            "https://mobileproxy.passport.yandex.net/1/bundle/oauth/token_by_sessionid",
-            data={
-                "client_id": "c0ebe342af7d48fbbbfcf2d2eedb8f9e",
-                "client_secret": "ad0a908f0aa341a182a37ecd75bc319e",
-            },
-            headers={"Ya-Client-Host": host, "Ya-Client-Cookie": cookies},
-        )
-        x_token = resp["access_token"]
-        return await self.validate_token(x_token)
+        try:
+            _LOGGER.debug(f"Exchanging cookies for x_token from {host}")
+            resp = await self._post_json(
+                "https://mobileproxy.passport.yandex.net/1/bundle/oauth/token_by_sessionid",
+                data={
+                    "client_id": "c0ebe342af7d48fbbbfcf2d2eedb8f9e",
+                    "client_secret": "ad0a908f0aa341a182a37ecd75bc319e",
+                },
+                headers={"Ya-Client-Host": host, "Ya-Client-Cookie": cookies},
+            )
+            if "access_token" not in resp:
+                _LOGGER.error(f"No access_token in response: {resp}")
+                return LoginResponse(resp)
+            x_token = resp["access_token"]
+            _LOGGER.debug(f"Got x_token from cookies")
+            return await self.validate_token(x_token)
+        except Exception as e:
+            _LOGGER.error(f"Cookie exchange failed: {type(e).__name__}: {e}", exc_info=True)
+            return LoginResponse({"errors": [f"cookies.exchange_failed: {str(e)[:100]}"]})
 
     async def validate_token(self, x_token: str) -> LoginResponse:
         """Return user info using token."""
-        async with self._get(
-            "https://mobileproxy.passport.yandex.net/1/bundle/account/short_info/?avatar_size=islands-300",
-            headers={"Authorization": f"OAuth {x_token}"},
-        ) as r:
-            resp = await r.json()
-        resp["x_token"] = x_token
-        return LoginResponse(resp)
+        try:
+            _LOGGER.debug(f"Validating x_token")
+            async with self._get(
+                "https://mobileproxy.passport.yandex.net/1/bundle/account/short_info/?avatar_size=islands-300",
+                headers={"Authorization": f"OAuth {x_token}"},
+            ) as r:
+                if r.status != 200:
+                    _LOGGER.error(f"Token validation failed: HTTP {r.status}")
+                    try:
+                        error_resp = await r.json()
+                        return LoginResponse(error_resp)
+                    except:
+                        return LoginResponse({"errors": [f"http.{r.status}"]})
+                resp = await r.json()
+            resp["x_token"] = x_token
+            _LOGGER.info(f"Token validated successfully for user: {resp.get('login', 'unknown')}")
+            return LoginResponse(resp)
+        except Exception as e:
+            _LOGGER.error(f"Token validation error: {type(e).__name__}: {e}", exc_info=True)
+            return LoginResponse({"errors": [f"token.validation_failed: {str(e)[:100]}"]})
 
     async def login_token(self, x_token: str) -> bool:
         """Login to Yandex with x-token."""
