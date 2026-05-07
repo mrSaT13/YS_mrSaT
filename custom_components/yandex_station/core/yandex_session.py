@@ -169,31 +169,43 @@ class YandexSession(BasicSession):
         csrf_token = await self._get_csrf_token()
         self.auth_payload = {"csrf_token": csrf_token}
 
+        # Используем новый BFF эндпоинт для multistep_start
         r = await self._post(
-            "https://passport.yandex.ru/registration-validations/auth/multi_step/start",
-            data={**self.auth_payload, "login": username},
+            "https://passport.yandex.ru/pwl-yandex/api/passport/auth/multistep_start",
+            headers={
+                "X-CSRF-Token": csrf_token,
+                "Origin": "https://passport.yandex.ru",
+                "Referer": "https://passport.yandex.ru/am?app_platform=android",
+            },
+            data={"login": username},
         )
         resp = await r.json()
         if resp.get("can_register") is True:
             return LoginResponse({"errors": ["account.not_found"]})
 
-        assert resp.get("can_authorize") is True, resp
+        assert resp.get("status") == "ok", resp
         self.auth_payload["track_id"] = resp["track_id"]
         return LoginResponse(resp)
 
     async def login_password(self, password: str) -> LoginResponse:
         """Login using password or key-app (30 second password)."""
         assert self.auth_payload
+        # Используем новый BFF эндпоинт для password/submit
         r = await self._post(
-            "https://passport.yandex.ru/registration-validations/auth/multi_step/commit_password",
+            "https://passport.yandex.ru/pwl-yandex/api/passport/auth/password/submit",
+            headers={
+                "X-CSRF-Token": self.auth_payload["csrf_token"],
+                "Origin": "https://passport.yandex.ru",
+                "Referer": "https://passport.yandex.ru/am?app_platform=android",
+            },
             data={
-                **self.auth_payload,
+                "track_id": self.auth_payload["track_id"],
                 "password": password,
                 "retpath": "https://passport.yandex.ru/am/finish?status=ok&from=Login",
             },
         )
         resp = await r.json()
-        if resp["status"] != "ok":
+        if resp.get("status") != "ok":
             return LoginResponse(resp)
         if "redirect_url" in resp:
             return LoginResponse({"errors": ["redirect.unsupported"]})
@@ -234,17 +246,25 @@ class YandexSession(BasicSession):
         # BFF multistep_start
         r = await self._post(
             "https://passport.yandex.ru/pwl-yandex/api/passport/auth/multistep_start",
-            headers={"X-CSRF-Token": csrf},
+            headers={
+                "X-CSRF-Token": csrf,
+                "Origin": "https://passport.yandex.ru",
+                "Referer": "https://passport.yandex.ru/am?app_platform=android",
+            },
             data={}
         )
         resp = await r.json()
         assert resp.get("status") == "ok", resp
         track_id = resp["track_id"]
         
-        # BFF password/submit
+        # BFF password/submit with with_code=1 for QR
         r = await self._post(
             "https://passport.yandex.ru/pwl-yandex/api/passport/auth/password/submit",
-            headers={"X-CSRF-Token": csrf},
+            headers={
+                "X-CSRF-Token": csrf,
+                "Origin": "https://passport.yandex.ru",
+                "Referer": "https://passport.yandex.ru/am?app_platform=android",
+            },
             data={"track_id": track_id, "with_code": 1, "retpath": "https://passport.yandex.ru/profile"}
         )
         resp = await r.json()
