@@ -87,6 +87,14 @@ class BasicSession:
         kwargs.setdefault("timeout", 5.0)
         return getattr(self._session, method)(url, **kwargs)
 
+    async def _get_json(self, url: str, **kwargs):
+        async with self._request("get", url, **kwargs) as r:
+            return await r.json()
+
+    async def _post_json(self, url: str, **kwargs):
+        async with self._request("post", url, **kwargs) as r:
+            return await r.json()
+
     def _get(self, url: str, **kwargs):
         return self._request("get", url, **kwargs)
 
@@ -170,7 +178,7 @@ class YandexSession(BasicSession):
         self.auth_payload = {"csrf_token": csrf_token}
 
         # Используем новый BFF эндпоинт для multistep_start
-        r = await self._post(
+        resp = await self._post_json(
             "https://passport.yandex.ru/pwl-yandex/api/passport/auth/multistep_start",
             headers={
                 "X-CSRF-Token": csrf_token,
@@ -179,7 +187,6 @@ class YandexSession(BasicSession):
             },
             data={"login": username},
         )
-        resp = await r.json()
         if resp.get("can_register") is True:
             return LoginResponse({"errors": ["account.not_found"]})
 
@@ -191,7 +198,7 @@ class YandexSession(BasicSession):
         """Login using password or key-app (30 second password)."""
         assert self.auth_payload
         # Используем новый BFF эндпоинт для password/submit
-        r = await self._post(
+        resp = await self._post_json(
             "https://passport.yandex.ru/pwl-yandex/api/passport/auth/password/submit",
             headers={
                 "X-CSRF-Token": self.auth_payload["csrf_token"],
@@ -204,7 +211,6 @@ class YandexSession(BasicSession):
                 "retpath": "https://passport.yandex.ru/am/finish?status=ok&from=Login",
             },
         )
-        resp = await r.json()
         if resp.get("status") != "ok":
             return LoginResponse(resp)
         if "redirect_url" in resp:
@@ -230,12 +236,12 @@ class YandexSession(BasicSession):
             
         except Exception as e:
             _LOGGER.warning(f"QR auth library error: {e}. Falling back to legacy method.")
-            return await self.get_qr_legacy()  # Рекурсивно вызовем fallback
+            return await self._get_qr_legacy()  # Исправленный вызов метода
 
     async def _get_qr_legacy(self) -> str:
         """Stable legacy QR method using BFF endpoints."""
-        r = await self._get("https://passport.yandex.ru/am?app_platform=android")
-        resp = await r.text()
+        async with self._get("https://passport.yandex.ru/am?app_platform=android") as r:
+            resp = await r.text()
         
         m = re.search(r'"csrf_token" value="([^"]+)"', resp)
         if not m:
@@ -244,7 +250,7 @@ class YandexSession(BasicSession):
         csrf = m[1]
         
         # BFF multistep_start
-        r = await self._post(
+        resp = await self._post_json(
             "https://passport.yandex.ru/pwl-yandex/api/passport/auth/multistep_start",
             headers={
                 "X-CSRF-Token": csrf,
@@ -253,12 +259,11 @@ class YandexSession(BasicSession):
             },
             data={}
         )
-        resp = await r.json()
         assert resp.get("status") == "ok", resp
         track_id = resp["track_id"]
         
         # BFF password/submit with with_code=1 for QR
-        r = await self._post(
+        resp = await self._post_json(
             "https://passport.yandex.ru/pwl-yandex/api/passport/auth/password/submit",
             headers={
                 "X-CSRF-Token": csrf,
@@ -267,7 +272,6 @@ class YandexSession(BasicSession):
             },
             data={"track_id": track_id, "with_code": 1, "retpath": "https://passport.yandex.ru/profile"}
         )
-        resp = await r.json()
         assert resp.get("status") == "ok", resp
         
         self.auth_payload = {"csrf_token": resp["csrf_token"], "track_id": track_id}
@@ -295,61 +299,55 @@ class YandexSession(BasicSession):
     async def _login_qr_legacy(self) -> LoginResponse:
         """Legacy QR polling method."""
         assert self.auth_payload
-        r = await self._post(
+        resp = await self._post_json(
             "https://passport.yandex.ru/auth/new/magic/status/", data=self.auth_payload
         )
-        resp = await r.json()
         if resp.get("status") != "ok":
             return LoginResponse({})
         return await self.login_cookies()
     async def get_sms(self):
         """Request an SMS to user phone."""
         assert self.auth_payload
-        r = await self._post(
+        resp = await self._post_json(
             "https://passport.yandex.ru/registration-validations/phone-confirm-code-submit",
             data={**self.auth_payload, "mode": "tracked"},
         )
-        resp = await r.json()
         assert resp["status"] == "ok"
 
     async def login_sms(self, code: str) -> LoginResponse:
         """Login with code from SMS."""
         assert self.auth_payload
-        r = await self._post(
+        resp = await self._post_json(
             "https://passport.yandex.ru/registration-validations/phone-confirm-code",
             data={**self.auth_payload, "mode": "tracked", "code": code},
         )
-        resp = await r.json()
         assert resp["status"] == "ok"
 
-        r = await self._post(
+        resp = await self._post_json(
             "https://passport.yandex.ru/registration-validations/multi-step-commit-sms-code",
             data={
                 **self.auth_payload,
                 "retpath": "https://passport.yandex.ru/am/finish?status=ok&from=Login",
             },
         )
-        resp = await r.json()
         assert resp["status"] == "ok"
         return await self.login_cookies()
 
     async def get_letter(self):
         """Request a magic link to user E-mail address."""
         assert self.auth_payload
-        r = await self._post(
+        resp = await self._post_json(
             "https://passport.yandex.ru/registration-validations/auth/send_magic_letter",
             data=self.auth_payload,
         )
-        resp = await r.json()
         assert resp["status"] == "ok"
 
     async def login_letter(self) -> LoginResponse:
         """Check if already logged in via magic link."""
         assert self.auth_payload
-        r = await self._post(
+        resp = await self._post_json(
             "https://passport.yandex.ru/auth/letter/status/", data=self.auth_payload
         )
-        resp = await r.json()
         assert resp["status"] == "ok"
         if not resp["magic_link_confirmed"]:
             return LoginResponse({})
