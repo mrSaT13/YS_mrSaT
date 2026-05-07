@@ -4,7 +4,7 @@ Yandex supports base auth methods:
 - magic_link - auth via link to email
 - sms_code - auth via pin code to mobile phone
 - magic (otp?) - auth via key-app (30 seconds password)
-- magic_x_token - auth via QR-conde (do not need username)
+- magic_x_token - auth via QR-code (do not need username)
 
 Advanced auth methods:
 - x_token - auth via super-token (1 year)
@@ -26,37 +26,19 @@ import time
 
 from aiohttp import ClientSession
 
+# Импорт библиотеки для авторизации
+try:
+    from ya_passport_auth import PassportClient, Credentials
+    from ya_passport_auth.exceptions import QRTimeoutError, YaPassportError
+    YA_PASSPORT_AVAILABLE = True
+except ImportError:
+    YA_PASSPORT_AVAILABLE = False
+
 _LOGGER = logging.getLogger(__name__)
 
 
 class LoginResponse:
-    """ "
-    status: ok
-       uid: 1234567890
-       display_name: John
-       public_name: John
-       firstname: John
-       lastname: McClane
-       gender: m
-       display_login: j0hn.mcclane
-       normalized_display_login: j0hn-mcclane
-       native_default_email: j0hn.mcclane@yandex.ru
-       avatar_url: XXX
-       is_avatar_empty: True
-       public_id: XXX
-       access_token: XXX
-       cloud_token: XXX
-       x_token: XXX
-       x_token_issued_at: 1607490000
-       access_token_expires_in: 24650000
-       x_token_expires_in: 24650000
-    status: error
-       errors: [captcha.required]
-       captcha_image_url: XXX
-    status: error
-       errors: [account.not_found]
-       errors: [password.not_matched]
-    """
+    """Response wrapper for Yandex login."""
 
     def __init__(self, resp: dict):
         self.raw = resp
@@ -71,15 +53,15 @@ class LoginResponse:
 
     @property
     def error(self):
-        return self.raw["errors"][0]
+        return self.raw["errors"][0] if self.errors else None
 
     @property
     def display_login(self):
-        return self.raw["display_login"]
+        return self.raw.get("display_login")
 
     @property
     def x_token(self):
-        return self.raw["x_token"]
+        return self.raw.get("x_token")
 
     @property
     def magic_link_email(self):
@@ -92,13 +74,12 @@ class LoginResponse:
 
 class BasicSession:
     _session: ClientSession
-
     domain: str = None
     proxy: str = None
     ssl: bool = None
 
     def _request(self, method: str, url: str, **kwargs):
-        """Internal request function with global support proxy ans ssl options."""
+        """Internal request function with global support proxy and ssl options."""
         if self.domain:
             url = url.replace("yandex.ru", self.domain)
         kwargs["proxy"] = self.proxy
@@ -121,14 +102,16 @@ class BasicSession:
         return self._session
 
 
-# noinspection PyPep8
 class YandexSession(BasicSession):
-    """Class for login in yandex via username, token, capcha."""
+    """Class for login in yandex via username, token, captcha."""
 
     auth_payload: dict = None
     csrf_token = None
-
     last_ts: float = 0
+    
+    # Для QR-авторизации через ya-passport-auth
+    _passport_client = None
+    _qr_session = None
 
     def __init__(
         self,
@@ -143,20 +126,16 @@ class YandexSession(BasicSession):
         :param cookie: optional base64 cookie from last session
         """
         self._session = session
-
-        # fix bug with wrong CSRF token response
         setattr(session.cookie_jar, "_quote_cookie", False)
 
         self.x_token = x_token
         self.music_token = music_token
         if cookie:
             cookie_jar = session.cookie_jar
-            # https://github.com/aio-libs/aiohttp/issues/7216
             _cookies = cookie_jar._cookies
             try:
                 raw = base64.b64decode(cookie)
                 cookie_jar._cookies = pickle.loads(raw)
-                # same as CookieJar._do_expiration()
                 cookie_jar.clear(lambda x: False)
             except:
                 cookie_jar._cookies = _cookies
@@ -175,13 +154,10 @@ class YandexSession(BasicSession):
         if r.status != 200 or "<title>400" in resp:
             raise Exception(
                 f"Yandex passport returned {r.status}. "
-                f"Check proxy/VPN settings - Yandex may block requests from non-Russian IPs. "
-                f"Set proxy in YAML config: yandex_station: proxy: http://..."
+                f"Check proxy/VPN settings."
             )
         
-        # Старый формат: <input "csrf_token" value="...">
         m = re.search(r'"csrf_token" value="([^"]+)"', resp)
-        # Новый формат: window.__CSRF__ = "..."
         if not m:
             m = re.search(r'window\.__CSRF__\s*=\s*"([^"]+)"', resp)
         
@@ -190,11 +166,9 @@ class YandexSession(BasicSession):
 
     async def login_username(self, username: str) -> LoginResponse:
         """Create login session and return supported auth methods."""
-        # step 1: csrf_token (универсальный метод)
         csrf_token = await self._get_csrf_token()
         self.auth_payload = {"csrf_token": csrf_token}
 
-        # step 2: track_id
         r = await self._post(
             "https://passport.yandex.ru/registration-validations/auth/multi_step/start",
             data={**self.auth_payload, "login": username},
@@ -205,18 +179,11 @@ class YandexSession(BasicSession):
 
         assert resp.get("can_authorize") is True, resp
         self.auth_payload["track_id"] = resp["track_id"]
-
-        # "preferred_auth_method":"password","auth_methods":["password","magic_link","magic_x_token"]}
-        # "preferred_auth_method":"password","auth_methods":["password","sms_code","magic_x_token"]}
-        # "preferred_auth_method":"magic","auth_methods":["magic","otp"]
-        # "preferred_auth_method":"magic_link","auth_methods":["magic_link"]
-
         return LoginResponse(resp)
 
     async def login_password(self, password: str) -> LoginResponse:
         """Login using password or key-app (30 second password)."""
         assert self.auth_payload
-        # step 3: password or 30 seconds key
         r = await self._post(
             "https://passport.yandex.ru/registration-validations/auth/multi_step/commit_password",
             data={
@@ -228,19 +195,37 @@ class YandexSession(BasicSession):
         resp = await r.json()
         if resp["status"] != "ok":
             return LoginResponse(resp)
-
         if "redirect_url" in resp:
             return LoginResponse({"errors": ["redirect.unsupported"]})
-
-        # step 4: x_token
         return await self.login_cookies()
 
     async def get_qr(self) -> str:
-        """Get link to QR-code auth."""
-        # step 1: csrf_token (универсальный метод с поддержкой старого и нового формата)
+        """Get link to QR-code auth using ya-passport-auth."""
+        if not YA_PASSPORT_AVAILABLE:
+            # Fallback to old method if library not installed
+            _LOGGER.warning("ya-passport-auth not available, using fallback method")
+            return await self._get_qr_legacy()
+        
+        try:
+            # Создаём клиент с поддержкой proxy если настроен
+            client_kwargs = {}
+            if self.proxy:
+                client_kwargs["proxy"] = self.proxy
+            
+            self._passport_client = await PassportClient.create(**client_kwargs)
+            self._qr_session = await self._passport_client.start_qr_login()
+            
+            return self._qr_session.qr_url
+            
+        except Exception as e:
+            _LOGGER.error(f"QR auth error: {e}")
+            # Fallback to legacy method
+            return await self._get_qr_legacy()
+
+    async def _get_qr_legacy(self) -> str:
+        """Legacy QR method (fallback if ya-passport-auth fails)."""
         page_csrf = await self._get_csrf_token()
         
-        # step 2: multistep_start (new BFF)
         r = await self._post(
             "https://passport.yandex.ru/pwl-yandex/api/passport/auth/multistep_start",
             headers={"X-CSRF-Token": page_csrf},
@@ -250,7 +235,6 @@ class YandexSession(BasicSession):
         assert resp["status"] == "ok", resp
         track_id = resp["track_id"]
         
-        # step 3: password/submit (new BFF)
         r = await self._post(
             "https://passport.yandex.ru/pwl-yandex/api/passport/auth/password/submit",
             headers={"X-CSRF-Token": page_csrf},
@@ -267,22 +251,47 @@ class YandexSession(BasicSession):
             "csrf_token": resp["csrf_token"],
             "track_id": track_id,
         }
-        
-        return (
-            "https://passport.yandex.ru/auth/magic/code/?track_id=" + track_id
-        )
+        return "https://passport.yandex.ru/auth/magic/code/?track_id=" + track_id
 
     async def login_qr(self) -> LoginResponse:
-        """Check if already logged in."""
+        """Check if QR auth confirmed using ya-passport-auth."""
+        # Если используется ya-passport-auth
+        if self._passport_client and self._qr_session and YA_PASSPORT_AVAILABLE:
+            try:
+                # Проверяем статус без блокировки (небольшой таймаут)
+                creds = await asyncio.wait_for(
+                    self._passport_client.poll_qr_once(self._qr_session),
+                    timeout=2.0
+                )
+                if creds and creds.x_token:
+                    # Сохраняем токен и валидируем
+                    self.x_token = creds.x_token.get_secret()
+                    return await self.validate_token(self.x_token)
+                return LoginResponse({})
+            except asyncio.TimeoutError:
+                # Ещё не подтверждено — вернём пустой ответ для поллинга
+                return LoginResponse({})
+            except QRTimeoutError:
+                return LoginResponse({"errors": ["qr_timeout"]})
+            except YaPassportError as e:
+                _LOGGER.error(f"YaPassport error: {e}")
+                return LoginResponse({"errors": [str(e)]})
+            except Exception as e:
+                _LOGGER.error(f"QR login error: {e}")
+                return LoginResponse({"errors": ["unknown"]})
+        
+        # Fallback к старому методу
+        return await self._login_qr_legacy()
+
+    async def _login_qr_legacy(self) -> LoginResponse:
+        """Legacy QR polling method."""
         assert self.auth_payload
         r = await self._post(
             "https://passport.yandex.ru/auth/new/magic/status/", data=self.auth_payload
         )
         resp = await r.json()
-        # resp={} if no auth yet
         if resp.get("status") != "ok":
             return LoginResponse({})
-
         return await self.login_cookies()
 
     async def get_sms(self):
@@ -314,11 +323,10 @@ class YandexSession(BasicSession):
         )
         resp = await r.json()
         assert resp["status"] == "ok"
-
         return await self.login_cookies()
 
     async def get_letter(self):
-        """Request an magic link to user E-mail address."""
+        """Request a magic link to user E-mail address."""
         assert self.auth_payload
         r = await self._post(
             "https://passport.yandex.ru/registration-validations/auth/send_magic_letter",
@@ -328,7 +336,7 @@ class YandexSession(BasicSession):
         assert resp["status"] == "ok"
 
     async def login_letter(self) -> LoginResponse:
-        """Check if already logged in."""
+        """Check if already logged in via magic link."""
         assert self.auth_payload
         r = await self._post(
             "https://passport.yandex.ru/auth/letter/status/", data=self.auth_payload
@@ -337,7 +345,6 @@ class YandexSession(BasicSession):
         assert resp["status"] == "ok"
         if not resp["magic_link_confirmed"]:
             return LoginResponse({})
-
         return await self.login_cookies()
 
     async def get_captcha(self) -> str:
@@ -366,25 +373,13 @@ class YandexSession(BasicSession):
         return resp["status"] == "ok"
 
     async def login_cookies(self, cookies: str = None) -> LoginResponse:
-        """Support three formats:
-        1. Empty - cookies will be loaded from the session
-        2. JSON from Copy Cookies (Google Chrome extension)
-           https://chrome.google.com/webstore/detail/copy-cookies/jcbpglbplpblnagieibnemmkiamekcdg
-        3. Raw cookie string `key1=value1; key2=value2`
-
-        For JSON format support cookies from different Yandex domains.
-        """
+        """Support three formats for cookies auth."""
         host = "passport.yandex.ru"
         if cookies is None:
             cookies = "; ".join(
-                [
-                    f"{c.key}={c.value}"
-                    for c in self._session.cookie_jar
-                    if c["domain"].endswith("yandex.ru")
-                ]
+                [f"{c.key}={c.value}" for c in self._session.cookie_jar if c["domain"].endswith("yandex.ru")]
             )
         elif cookies[0] == "[":
-            # @dext0r: fix cookies auth
             raw = json.loads(cookies)
             host = next(p["domain"] for p in raw if p["domain"].startswith(".yandex."))
             cookies = "; ".join([f"{p['name']}={p['value']}" for p in raw])
@@ -399,7 +394,6 @@ class YandexSession(BasicSession):
         )
         resp = await r.json()
         x_token = resp["access_token"]
-
         return await self.validate_token(x_token)
 
     async def validate_token(self, x_token: str) -> LoginResponse:
@@ -413,12 +407,8 @@ class YandexSession(BasicSession):
         return LoginResponse(resp)
 
     async def login_token(self, x_token: str) -> bool:
-        """Login to Yandex with x-token. Usual you should'n call this method.
-        Better pass your x-token to construstor and call refresh_cookies to
-        check if all fine.
-        """
+        """Login to Yandex with x-token."""
         _LOGGER.debug("Login in Yandex with token")
-
         payload = {"type": "x-token", "retpath": "https://www.yandex.ru"}
         headers = {"Ya-Consumer-Authorization": f"OAuth {x_token}"}
         r = await self._post(
@@ -430,37 +420,27 @@ class YandexSession(BasicSession):
         if resp["status"] != "ok":
             _LOGGER.error(f"Login with token error: {resp}")
             return False
-
         host = resp["passport_host"]
         payload = {"track_id": resp["track_id"]}
-        r = await self._get(
-            f"{host}/auth/session/", params=payload, allow_redirects=False
-        )
+        r = await self._get(f"{host}/auth/session/", params=payload, allow_redirects=False)
         assert r.status == 302, await r.read()
-
         return True
 
     async def refresh_cookies(self) -> bool:
         """Checks if cookies ok and updates them if necessary."""
-        # check cookies
         r = await self._get("https://yandex.ru/quasar?storage=1")
         resp = await r.json()
         if resp["storage"]["user"]["uid"]:
-            # if cookies fine - return
             return True
-
-        # refresh cookies
         ok = await self.login_token(self.x_token)
         if ok:
             await self._handle_update()
         return ok
 
     async def get_music_token(self, x_token: str):
-        """Get music token using x-token. Usual you should'n call this method."""
+        """Get music token using x-token."""
         _LOGGER.debug("Get music token")
-
         payload = {
-            # Thanks to https://github.com/MarshalX/yandex-music-api/
             "client_secret": "53bc75238f0c4d08a118e51fe9203300",
             "client_id": "23cabbbdc6cd418abb4b39c32c41195d",
             "grant_type": "x-token",
@@ -472,9 +452,7 @@ class YandexSession(BasicSession):
         return resp["access_token"]
 
     async def get(self, url: str, **kwargs):
-        if url.startswith(
-            ("https://quasar.yandex.net/glagol/", "https://api.music.yandex.net/")
-        ):
+        if url.startswith(("https://quasar.yandex.net/glagol/", "https://api.music.yandex.net/")):
             return await self.request_glagol(url, **kwargs)
         return await self.request("get", url, **kwargs)
 
@@ -491,24 +469,19 @@ class YandexSession(BasicSession):
         return await self._session.ws_connect(*args, **kwargs)
 
     async def request(self, method: str, url: str, retry: int = 2, **kwargs):
-        """Public request function"""
-        # DDoS protection for Yandex servers
+        """Public request function."""
         while (delay := self.last_ts + 0.2 - time.time()) > 0:
             await asyncio.sleep(delay)
         self.last_ts = time.time()
 
-        # all except GET should contain CSRF token
         if method != "get" and not url.startswith("https://rpc.alice.yandex.ru"):
             if self.csrf_token is None:
                 _LOGGER.debug(f"Обновление CSRF-токена, proxy: {self.proxy}")
-                r = await self._get(
-                    "https://yandex.ru/quasar", proxy=self.proxy, ssl=self.ssl
-                )
+                r = await self._get("https://yandex.ru/quasar", proxy=self.proxy, ssl=self.ssl)
                 raw = await r.text()
                 m = re.search('"csrfToken2":"(.+?)"', raw)
                 assert m, raw
                 self.csrf_token = m[1]
-
             kwargs["headers"] = {"x-csrf-token": self.csrf_token}
 
         r = await self._request(method, url, **kwargs)
@@ -517,10 +490,8 @@ class YandexSession(BasicSession):
         elif r.status == 400:
             retry = 0
         elif r.status == 401:
-            # 401 - no cookies
             await self.refresh_cookies()
         elif r.status == 403:
-            # 403 - no x-csrf-token
             self.csrf_token = None
         elif not url.endswith("/get_alarms"):
             _LOGGER.warning(f"{url} return {r.status} status")
@@ -528,41 +499,30 @@ class YandexSession(BasicSession):
         if retry:
             _LOGGER.debug(f"Retry {method} {url}")
             return await self.request(method, url, retry - 1, **kwargs)
-
         raise Exception(f"{url} return {r.status} status")
 
     async def request_glagol(self, url: str, retry: int = 2, **kwargs):
-        # update music token if needed
         if not self.music_token:
             assert self.x_token, "x-token required"
             self.music_token = await self.get_music_token(self.x_token)
             await self._handle_update()
-
-        # OAuth should be capitalize, or music will be 128 bitrate quality
         headers = kwargs.setdefault("headers", {})
         headers["Authorization"] = f"OAuth {self.music_token}"
         r = await self._get(url, **kwargs)
         if r.status == 200:
             return r
         elif r.status == 403:
-            # clear music token if problem
             self.music_token = None
-
         if retry:
             _LOGGER.debug(f"Retry {url}")
             return await self.request_glagol(url, retry - 1)
-
         raise Exception(f"{url} return {r.status} status")
 
     @property
     def cookie(self):
-        raw = pickle.dumps(
-            getattr(self._session.cookie_jar, "_cookies"), pickle.HIGHEST_PROTOCOL
-        )
+        raw = pickle.dumps(getattr(self._session.cookie_jar, "_cookies"), pickle.HIGHEST_PROTOCOL)
         return base64.b64encode(raw).decode()
 
     async def _handle_update(self):
         for coro in self._update_listeners:
-            await coro(
-                x_token=self.x_token, music_token=self.music_token, cookie=self.cookie
-            )
+            await coro(x_token=self.x_token, music_token=self.music_token, cookie=self.cookie)
