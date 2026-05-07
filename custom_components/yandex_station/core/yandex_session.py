@@ -156,14 +156,14 @@ class YandexSession(BasicSession):
 
     async def _get_csrf_token(self):
         """Get CSRF token with fallback for new Yandex Passport format."""
-        r = await self._get("https://passport.yandex.ru/am?app_platform=android")
-        resp = await r.text()
-        
-        if r.status != 200 or "<title>400" in resp:
-            raise Exception(
-                f"Yandex passport returned {r.status}. "
-                f"Check proxy/VPN settings."
-            )
+        async with self._get("https://passport.yandex.ru/am?app_platform=android") as r:
+            resp = await r.text()
+            
+            if r.status != 200 or "<title>400" in resp:
+                raise Exception(
+                    f"Yandex passport returned {r.status}. "
+                    f"Check proxy/VPN settings."
+                )
         
         m = re.search(r'"csrf_token" value="([^"]+)"', resp)
         if not m:
@@ -356,12 +356,11 @@ class YandexSession(BasicSession):
     async def get_captcha(self) -> str:
         """Get link to captcha image."""
         assert self.auth_payload
-        r = await self._post(
+        resp = await self._post_json(
             "https://passport.yandex.ru/registration-validations/textcaptcha",
             data=self.auth_payload,
             headers={"X-Requested-With": "XMLHttpRequest"},
         )
-        resp = await r.json()
         assert resp["status"] == "ok"
         self.auth_payload["key"] = resp["key"]
         return resp["image_url"]
@@ -370,12 +369,11 @@ class YandexSession(BasicSession):
         """Login with answer to captcha from login_username."""
         _LOGGER.debug("Login in Yandex with captcha")
         assert self.auth_payload
-        r = await self._post(
+        resp = await self._post_json(
             "https://passport.yandex.ru/registration-validations/checkHuman",
             data={**self.auth_payload, "answer": captcha_answer},
             headers={"X-Requested-With": "XMLHttpRequest"},
         )
-        resp = await r.json()
         return resp["status"] == "ok"
 
     async def login_cookies(self, cookies: str = None) -> LoginResponse:
@@ -404,11 +402,11 @@ class YandexSession(BasicSession):
 
     async def validate_token(self, x_token: str) -> LoginResponse:
         """Return user info using token."""
-        r = await self._get(
+        async with self._get(
             "https://mobileproxy.passport.yandex.net/1/bundle/account/short_info/?avatar_size=islands-300",
             headers={"Authorization": f"OAuth {x_token}"},
-        )
-        resp = await r.json()
+        ) as r:
+            resp = await r.json()
         resp["x_token"] = x_token
         return LoginResponse(resp)
 
@@ -417,25 +415,25 @@ class YandexSession(BasicSession):
         _LOGGER.debug("Login in Yandex with token")
         payload = {"type": "x-token", "retpath": "https://www.yandex.ru"}
         headers = {"Ya-Consumer-Authorization": f"OAuth {x_token}"}
-        r = await self._post(
+        async with self._post(
             "https://mobileproxy.passport.yandex.net/1/bundle/auth/x_token/",
             data=payload,
             headers=headers,
-        )
-        resp = await r.json()
+        ) as r:
+            resp = await r.json()
         if resp["status"] != "ok":
             _LOGGER.error(f"Login with token error: {resp}")
             return False
         host = resp["passport_host"]
         payload = {"track_id": resp["track_id"]}
-        r = await self._get(f"{host}/auth/session/", params=payload, allow_redirects=False)
-        assert r.status == 302, await r.read()
+        async with self._get(f"{host}/auth/session/", params=payload, allow_redirects=False) as r:
+            assert r.status == 302, await r.read()
         return True
 
     async def refresh_cookies(self) -> bool:
         """Checks if cookies ok and updates them if necessary."""
-        r = await self._get("https://yandex.ru/quasar?storage=1")
-        resp = await r.json()
+        async with self._get("https://yandex.ru/quasar?storage=1") as r:
+            resp = await r.json()
         if resp["storage"]["user"]["uid"]:
             return True
         ok = await self.login_token(self.x_token)
