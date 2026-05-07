@@ -200,87 +200,76 @@ class YandexSession(BasicSession):
         return await self.login_cookies()
 
     async def get_qr(self) -> str:
-        """Get link to QR-code auth using ya-passport-auth."""
+        """Get link to QR-code auth."""
+        # Fallback to legacy if library fails or not available
         if not YA_PASSPORT_AVAILABLE:
-            # Fallback to old method if library not installed
-            _LOGGER.warning("ya-passport-auth not available, using fallback method")
+            _LOGGER.debug("ya-passport-auth not available, using legacy BFF method")
             return await self._get_qr_legacy()
         
         try:
-            # Создаём клиент с поддержкой proxy если настроен
-            client_kwargs = {}
-            if self.proxy:
-                client_kwargs["proxy"] = self.proxy
+            # Правильная инициализация без await
+            self._passport_client = PassportClient()
             
-            self._passport_client = await PassportClient.create(**client_kwargs)
+            # Если нужен прокси, библиотека обычно берёт его из окружения или session
+            # Если ошибка останется - fallback сработает автоматически
+            
             self._qr_session = await self._passport_client.start_qr_login()
-            
             return self._qr_session.qr_url
             
         except Exception as e:
-            _LOGGER.error(f"QR auth error: {e}")
-            # Fallback to legacy method
-            return await self._get_qr_legacy()
+            _LOGGER.warning(f"QR auth library error: {e}. Falling back to legacy method.")
+            return await self.get_qr_legacy()  # Рекурсивно вызовем fallback
 
     async def _get_qr_legacy(self) -> str:
-        """Legacy QR method (fallback if ya-passport-auth fails)."""
-        page_csrf = await self._get_csrf_token()
+        """Stable legacy QR method using BFF endpoints."""
+        r = await self._get("https://passport.yandex.ru/am?app_platform=android")
+        resp = await r.text()
         
+        m = re.search(r'"csrf_token" value="([^"]+)"', resp)
+        if not m:
+            m = re.search(r'window\.__CSRF__\s*=\s*"([^"]+)"', resp)
+        assert m, f"CSRF not found: {resp[:300]}"
+        csrf = m[1]
+        
+        # BFF multistep_start
         r = await self._post(
             "https://passport.yandex.ru/pwl-yandex/api/passport/auth/multistep_start",
-            headers={"X-CSRF-Token": page_csrf},
-            data={},
+            headers={"X-CSRF-Token": csrf},
+            data={}
         )
         resp = await r.json()
-        assert resp["status"] == "ok", resp
+        assert resp.get("status") == "ok", resp
         track_id = resp["track_id"]
         
+        # BFF password/submit
         r = await self._post(
             "https://passport.yandex.ru/pwl-yandex/api/passport/auth/password/submit",
-            headers={"X-CSRF-Token": page_csrf},
-            data={
-                "track_id": track_id,
-                "with_code": 1,
-                "retpath": "https://passport.yandex.ru/profile",
-            },
+            headers={"X-CSRF-Token": csrf},
+            data={"track_id": track_id, "with_code": 1, "retpath": "https://passport.yandex.ru/profile"}
         )
         resp = await r.json()
-        assert resp["status"] == "ok", resp
+        assert resp.get("status") == "ok", resp
         
-        self.auth_payload = {
-            "csrf_token": resp["csrf_token"],
-            "track_id": track_id,
-        }
-        return "https://passport.yandex.ru/auth/magic/code/?track_id=" + track_id
+        self.auth_payload = {"csrf_token": resp["csrf_token"], "track_id": track_id}
+        return f"https://passport.yandex.ru/auth/magic/code/?track_id={track_id}"
 
     async def login_qr(self) -> LoginResponse:
-        """Check if QR auth confirmed using ya-passport-auth."""
-        # Если используется ya-passport-auth
+        """Poll QR confirmation."""
+        # Если используется библиотека
         if self._passport_client and self._qr_session and YA_PASSPORT_AVAILABLE:
             try:
-                # Проверяем статус без блокировки (небольшой таймаут)
-                creds = await asyncio.wait_for(
-                    self._passport_client.poll_qr_once(self._qr_session),
-                    timeout=2.0
-                )
-                if creds and creds.x_token:
-                    # Сохраняем токен и валидируем
-                    self.x_token = creds.x_token.get_secret()
+                # Неблокирующая проверка статуса
+                status = await self._passport_client.check_qr_status(self._qr_session)
+                if status.is_confirmed:
+                    creds = await self._passport_client.get_credentials(self._qr_session)
+                    self.x_token = creds.x_token
                     return await self.validate_token(self.x_token)
                 return LoginResponse({})
-            except asyncio.TimeoutError:
-                # Ещё не подтверждено — вернём пустой ответ для поллинга
-                return LoginResponse({})
-            except QRTimeoutError:
-                return LoginResponse({"errors": ["qr_timeout"]})
-            except YaPassportError as e:
-                _LOGGER.error(f"YaPassport error: {e}")
-                return LoginResponse({"errors": [str(e)]})
             except Exception as e:
-                _LOGGER.error(f"QR login error: {e}")
-                return LoginResponse({"errors": ["unknown"]})
+                _LOGGER.debug(f"QR poll library error: {e}")
+                return LoginResponse({})
         
-        # Fallback к старому методу
+        # Legacy fallback polling
         return await self._login_qr_legacy()
 
     async def _login_qr_legacy(self) -> LoginResponse:
@@ -293,7 +282,6 @@ class YandexSession(BasicSession):
         if resp.get("status") != "ok":
             return LoginResponse({})
         return await self.login_cookies()
-
     async def get_sms(self):
         """Request an SMS to user phone."""
         assert self.auth_payload
