@@ -324,42 +324,40 @@ class YandexSession(BasicSession):
         return qr_url
 
     async def login_qr(self) -> LoginResponse:
-        """Poll QR confirmation using ya-passport-auth library."""
+        """Poll QR confirmation and complete login using ya-passport-auth library."""
         if not self._passport_client or not self._qr_session:
             _LOGGER.error("QR session not initialized - call get_qr() first")
             return LoginResponse({"errors": ["qr.not_initialized"]})
         
         try:
-            _LOGGER.debug(f"Checking QR confirmation status (track_id={self._qr_session.track_id})")
+            _LOGGER.debug(f"Polling QR confirmation (track_id={self._qr_session.track_id})")
             
-            # Проверяем статус
-            is_confirmed = await self._passport_client._qr.check_status(self._qr_session)
-            
-            if not is_confirmed:
-                _LOGGER.debug("QR not yet confirmed, waiting...")
-                return LoginResponse({})
-            
-            _LOGGER.debug("QR confirmed! Completing login...")
-            
-            # Получаем credentials после подтверждения
-            credentials = await self._passport_client.complete_qr_login(self._qr_session)
+            # Используем встроенный метод библиотеки который корректно обменивает токены
+            # Это более надежный способ, чем отдельные check_status + complete_qr_login
+            credentials = await self._passport_client.poll_qr_until_confirmed(
+                self._qr_session,
+                poll_interval=0.5,  # проверять каждые 0.5 сек
+                total_timeout=60.0,  # таймаут 60 сек
+            )
             
             _LOGGER.info(f"QR login completed successfully")
+            _LOGGER.debug(f"Credentials: x_token={credentials.x_token}, music_token={credentials.music_token}")
+            
             self.x_token = str(credentials.x_token)
             self.music_token = str(credentials.music_token) if credentials.music_token else None
             
-            _LOGGER.debug(f"Retrieved x_token, validating...")
+            _LOGGER.debug(f"Validating x_token")
             return await self.validate_token(self.x_token)
             
-        except QRPendingError as e:
-            _LOGGER.debug(f"QR still pending: {e}")
-            return LoginResponse({})
         except QRTimeoutError as e:
             _LOGGER.error(f"QR timeout: {e}")
             return LoginResponse({"errors": ["qr.timeout"]})
+        except QRPendingError as e:
+            _LOGGER.debug(f"QR still pending: {e}")
+            return LoginResponse({})
         except Exception as e:
             _LOGGER.error(f"QR polling failed: {type(e).__name__}: {e}", exc_info=True)
-            return LoginResponse({"errors": [f"qr.error: {str(e)[:100]}"]})
+            return LoginResponse({"errors": [f"qr.error: {str(e)[:150]}"]})
 
     async def _login_qr_legacy(self) -> LoginResponse:
         """Fallback legacy QR polling method (for reference only)."""
@@ -484,21 +482,29 @@ class YandexSession(BasicSession):
     async def validate_token(self, x_token: str) -> LoginResponse:
         """Return user info using token."""
         try:
-            _LOGGER.debug(f"Validating x_token")
+            _LOGGER.debug(f"Validating x_token (length={len(str(x_token))})")
             async with self._get(
                 "https://mobileproxy.passport.yandex.net/1/bundle/account/short_info/?avatar_size=islands-300",
                 headers={"Authorization": f"OAuth {x_token}"},
             ) as r:
+                _LOGGER.debug(f"Token validation response: HTTP {r.status}")
                 if r.status != 200:
                     _LOGGER.error(f"Token validation failed: HTTP {r.status}")
                     try:
                         error_resp = await r.json()
+                        _LOGGER.error(f"Error response: {error_resp}")
+                        if "error" in error_resp:
+                            return LoginResponse({"errors": [error_resp["error"]]})
                         return LoginResponse(error_resp)
-                    except:
+                    except Exception as json_err:
+                        error_text = await r.text()
+                        _LOGGER.error(f"Error text: {error_text}")
                         return LoginResponse({"errors": [f"http.{r.status}"]})
                 resp = await r.json()
+            
             resp["x_token"] = x_token
-            _LOGGER.info(f"Token validated successfully for user: {resp.get('login', 'unknown')}")
+            login = resp.get("login", resp.get("display_name", "unknown"))
+            _LOGGER.info(f"Token validated successfully for user: {login}")
             return LoginResponse(resp)
         except Exception as e:
             _LOGGER.error(f"Token validation error: {type(e).__name__}: {e}", exc_info=True)
