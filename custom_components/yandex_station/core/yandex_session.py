@@ -224,26 +224,38 @@ class YandexSession(BasicSession):
         resp = await r.text()
         m = re.search(r'"csrf_token" value="([^"]+)"', resp)
         assert m, resp
-
-        # step 2: track_id
+        page_csrf = m[1]
+        
+        # step 2: multistep_start (new BFF)
         r = await self._post(
-            "https://passport.yandex.ru/registration-validations/auth/password/submit",
+            "https://passport.yandex.ru/pwl-yandex/api/passport/auth/multistep_start",
+            headers={"X-CSRF-Token": page_csrf},
+            data={},
+        )
+        resp = await r.json()
+        assert resp["status"] == "ok", resp
+        track_id = resp["track_id"]
+        
+        # step 3: password/submit (new BFF)
+        r = await self._post(
+            "https://passport.yandex.ru/pwl-yandex/api/passport/auth/password/submit",
+            headers={"X-CSRF-Token": page_csrf},
             data={
-                "csrf_token": m[1],
-                "retpath": "https://passport.yandex.ru/profile",
+                "track_id": track_id,
                 "with_code": 1,
+                "retpath": "https://passport.yandex.ru/profile",
             },
         )
         resp = await r.json()
         assert resp["status"] == "ok", resp
-
+        
         self.auth_payload = {
             "csrf_token": resp["csrf_token"],
-            "track_id": resp["track_id"],
+            "track_id": track_id,
         }
-
+        
         return (
-            "https://passport.yandex.ru/auth/magic/code/?track_id=" + resp["track_id"]
+            "https://passport.yandex.ru/auth/magic/code/?track_id=" + track_id
         )
 
     async def login_qr(self) -> LoginResponse:

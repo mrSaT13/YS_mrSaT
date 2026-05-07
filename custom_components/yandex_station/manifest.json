@@ -1,7 +1,8 @@
 {
   "domain": "yandex_station",
-  "name": "Yandex.Station",
+  "name": "Yandex.Station (mrSaT)",
   "codeowners": [
+    "@mrSaT13",
     "@AlexxIT"
   ],
   "config_flow": true,
@@ -9,9 +10,9 @@
     "http",
     "zeroconf"
   ],
-  "documentation": "https://github.com/AlexxIT/YandexStation",
+  "documentation": "https://github.com/mrSaT13/YS_mrSaT",
   "iot_class": "local_push",
-  "issue_tracker": "https://github.com/AlexxIT/YandexStation/issues",
+  "issue_tracker": "https://github.com/mrSaT13/YS_mrSaT/issues",
   "requirements": [],
-  "version": "3.20.3"
+  "version": "3.20.3-mrSaT1"
 }
