@@ -23,8 +23,18 @@ import logging
 import pickle
 import re
 import time
+import sys
+import os
 
 from aiohttp import ClientSession
+
+# Пытаемся добавить путь к ya_passport_auth, если он есть в рабочей директории
+try:
+    _lib_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))), "ya-passport-auth-main", "ya-passport-auth-main", "src")
+    if os.path.exists(_lib_path) and _lib_path not in sys.path:
+        sys.path.insert(0, _lib_path)
+except Exception:
+    pass
 
 # Импорт библиотеки для авторизации
 try:
@@ -187,10 +197,11 @@ class YandexSession(BasicSession):
             },
             data={"login": username},
         )
+        if resp.get("status") != "ok":
+            return LoginResponse(resp)
         if resp.get("can_register") is True:
             return LoginResponse({"errors": ["account.not_found"]})
 
-        assert resp.get("status") == "ok", resp
         self.auth_payload["track_id"] = resp["track_id"]
         return LoginResponse(resp)
 
@@ -212,9 +223,17 @@ class YandexSession(BasicSession):
             },
         )
         if resp.get("status") != "ok":
+            # Если требуется двухфакторка (SMS), Яндекс вернет status 'ok' в некоторых случаях
+            # или специфические поля. Если статус не 'ok', возвращаем ответ для обработки
             return LoginResponse(resp)
+        
+        # Для BFF успех — это часто наличие csrf_token (для QR) или переход к cookies
         if "redirect_url" in resp:
+            # BFF может вернуть URL для подтверждения
+            if "/am/finish" in resp["redirect_url"]:
+                return await self.login_cookies()
             return LoginResponse({"errors": ["redirect.unsupported"]})
+            
         return await self.login_cookies()
 
     async def get_qr(self) -> str:
