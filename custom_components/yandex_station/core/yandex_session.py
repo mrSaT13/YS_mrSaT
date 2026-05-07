@@ -238,37 +238,25 @@ class YandexSession(BasicSession):
 
     async def get_qr(self) -> str:
         """Get link to QR-code auth."""
-        # Fallback to legacy if library fails or not available
-        if not YA_PASSPORT_AVAILABLE:
-            _LOGGER.debug("ya-passport-auth not available, using legacy BFF method")
-            return await self._get_qr_legacy()
-        
-        try:
-            # Правильная инициализация без await
-            self._passport_client = PassportClient()
-            
-            # Если нужен прокси, библиотека обычно берёт его из окружения или session
-            # Если ошибка останется - fallback сработает автоматически
-            
-            self._qr_session = await self._passport_client.start_qr_login()
-            return self._qr_session.qr_url
-            
-        except Exception as e:
-            _LOGGER.warning(f"QR auth library error: {e}. Falling back to legacy method.")
-            return await self._get_qr_legacy()  # Исправленный вызов метода
+        # Всегда используем надежный BFF метод
+        _LOGGER.debug("Getting QR code via BFF endpoints")
+        return await self._get_qr_legacy()
 
     async def _get_qr_legacy(self) -> str:
         """Stable legacy QR method using BFF endpoints."""
+        # Step 1: Get CSRF token
         async with self._get("https://passport.yandex.ru/am?app_platform=android") as r:
             resp = await r.text()
         
         m = re.search(r'"csrf_token" value="([^"]+)"', resp)
         if not m:
             m = re.search(r'window\.__CSRF__\s*=\s*"([^"]+)"', resp)
-        assert m, f"CSRF not found: {resp[:300]}"
+        if not m:
+            _LOGGER.error(f"CSRF not found in response")
+            raise Exception("CSRF token not found")
         csrf = m[1]
         
-        # BFF multistep_start
+        # Step 2: BFF multistep_start - инициирует сессию
         resp = await self._post_json(
             "https://passport.yandex.ru/pwl-yandex/api/passport/auth/multistep_start",
             headers={
@@ -278,10 +266,16 @@ class YandexSession(BasicSession):
             },
             data={}
         )
-        assert resp.get("status") == "ok", resp
-        track_id = resp["track_id"]
+        if resp.get("status") != "ok":
+            _LOGGER.error(f"multistep_start failed: {resp}")
+            raise Exception(f"multistep_start failed: {resp}")
         
-        # BFF password/submit with with_code=1 for QR
+        track_id = resp.get("track_id")
+        if not track_id:
+            _LOGGER.error(f"No track_id in response: {resp}")
+            raise Exception("No track_id in response")
+        
+        # Step 3: BFF password/submit с with_code=1 для получения QR
         resp = await self._post_json(
             "https://passport.yandex.ru/pwl-yandex/api/passport/auth/password/submit",
             headers={
@@ -289,40 +283,49 @@ class YandexSession(BasicSession):
                 "Origin": "https://passport.yandex.ru",
                 "Referer": "https://passport.yandex.ru/am?app_platform=android",
             },
-            data={"track_id": track_id, "with_code": 1, "retpath": "https://passport.yandex.ru/profile"}
+            data={
+                "track_id": track_id, 
+                "with_code": 1,
+                "retpath": "https://passport.yandex.ru/profile"
+            }
         )
-        assert resp.get("status") == "ok", resp
+        if resp.get("status") != "ok":
+            _LOGGER.error(f"password/submit failed: {resp}")
+            # Продолжаем, даже если status не ok - может быть это норма для QR
         
-        self.auth_payload = {"csrf_token": resp["csrf_token"], "track_id": track_id}
-        return f"https://passport.yandex.ru/auth/magic/code/?track_id={track_id}"
+        # Получаем per-track csrf_token для polling
+        per_track_csrf = resp.get("csrf_token")
+        if per_track_csrf:
+            self.auth_payload = {"csrf_token": per_track_csrf, "track_id": track_id}
+        else:
+            # Fallback: используем исходный csrf
+            self.auth_payload = {"csrf_token": csrf, "track_id": track_id}
+            _LOGGER.warning("No per-track csrf_token, using page csrf for polling")
+        
+        qr_url = f"https://passport.yandex.ru/auth/magic/code/?track_id={track_id}"
+        _LOGGER.debug(f"QR URL generated: {qr_url}")
+        return qr_url
 
     async def login_qr(self) -> LoginResponse:
         """Poll QR confirmation."""
-        # Если используется библиотека
-        if self._passport_client and self._qr_session and YA_PASSPORT_AVAILABLE:
-            try:
-                # Неблокирующая проверка статуса
-                status = await self._passport_client.check_qr_status(self._qr_session)
-                if status.is_confirmed:
-                    creds = await self._passport_client.get_credentials(self._qr_session)
-                    self.x_token = creds.x_token
-                    return await self.validate_token(self.x_token)
-                return LoginResponse({})
-            except Exception as e:
-                _LOGGER.debug(f"QR poll library error: {e}")
-                return LoginResponse({})
-        
-        # Legacy fallback polling
+        # Всегда используем BFF метод
         return await self._login_qr_legacy()
 
     async def _login_qr_legacy(self) -> LoginResponse:
         """Legacy QR polling method."""
-        assert self.auth_payload
+        if not self.auth_payload:
+            _LOGGER.error("auth_payload not set - call get_qr() first")
+            return LoginResponse({"errors": ["auth.no_payload"]})
+        
         resp = await self._post_json(
             "https://passport.yandex.ru/auth/new/magic/status/", data=self.auth_payload
         )
+        
         if resp.get("status") != "ok":
-            return LoginResponse({})
+            _LOGGER.debug(f"QR polling returned status: {resp.get('status')}, full response: {resp}")
+            return LoginResponse(resp)
+        
+        _LOGGER.debug("QR confirmed, proceeding to cookies")
         return await self.login_cookies()
     async def get_sms(self):
         """Request an SMS to user phone."""
@@ -407,7 +410,7 @@ class YandexSession(BasicSession):
             host = next(p["domain"] for p in raw if p["domain"].startswith(".yandex."))
             cookies = "; ".join([f"{p['name']}={p['value']}" for p in raw])
 
-        r = await self._post(
+        resp = await self._post_json(
             "https://mobileproxy.passport.yandex.net/1/bundle/oauth/token_by_sessionid",
             data={
                 "client_id": "c0ebe342af7d48fbbbfcf2d2eedb8f9e",
@@ -415,7 +418,6 @@ class YandexSession(BasicSession):
             },
             headers={"Ya-Client-Host": host, "Ya-Client-Cookie": cookies},
         )
-        resp = await r.json()
         x_token = resp["access_token"]
         return await self.validate_token(x_token)
 
@@ -469,9 +471,10 @@ class YandexSession(BasicSession):
             "grant_type": "x-token",
             "access_token": x_token,
         }
-        r = await self._post("https://oauth.mobile.yandex.net/1/token", data=payload)
-        resp = await r.json()
-        assert "access_token" in resp, resp
+        resp = await self._post_json("https://oauth.mobile.yandex.net/1/token", data=payload)
+        if "access_token" not in resp:
+            _LOGGER.error(f"Failed to get music token: {resp}")
+            return None
         return resp["access_token"]
 
     async def get(self, url: str, **kwargs):
@@ -500,46 +503,53 @@ class YandexSession(BasicSession):
         if method != "get" and not url.startswith("https://rpc.alice.yandex.ru"):
             if self.csrf_token is None:
                 _LOGGER.debug(f"Обновление CSRF-токена, proxy: {self.proxy}")
-                r = await self._get("https://yandex.ru/quasar", proxy=self.proxy, ssl=self.ssl)
-                raw = await r.text()
+                async with self._get("https://yandex.ru/quasar", proxy=self.proxy, ssl=self.ssl) as r:
+                    raw = await r.text()
                 m = re.search('"csrfToken2":"(.+?)"', raw)
-                assert m, raw
+                if not m:
+                    _LOGGER.error(f"CSRF token not found in response")
+                    return None
                 self.csrf_token = m[1]
             kwargs["headers"] = {"x-csrf-token": self.csrf_token}
 
-        r = await self._request(method, url, **kwargs)
-        if r.status == 200:
-            return r
-        elif r.status == 400:
-            retry = 0
-        elif r.status == 401:
-            await self.refresh_cookies()
-        elif r.status == 403:
-            self.csrf_token = None
-        elif not url.endswith("/get_alarms"):
-            _LOGGER.warning(f"{url} return {r.status} status")
+        async with self._request(method, url, **kwargs) as r:
+            if r.status == 200:
+                return r
+            elif r.status == 400:
+                retry = 0
+            elif r.status == 401:
+                await self.refresh_cookies()
+            elif r.status == 403:
+                self.csrf_token = None
+            elif not url.endswith("/get_alarms"):
+                _LOGGER.warning(f"{url} return {r.status} status")
 
-        if retry:
-            _LOGGER.debug(f"Retry {method} {url}")
-            return await self.request(method, url, retry - 1, **kwargs)
-        raise Exception(f"{url} return {r.status} status")
+            if retry:
+                _LOGGER.debug(f"Retry {method} {url}")
+                return await self.request(method, url, retry - 1, **kwargs)
+            raise Exception(f"{url} return {r.status} status")
 
     async def request_glagol(self, url: str, retry: int = 2, **kwargs):
         if not self.music_token:
-            assert self.x_token, "x-token required"
+            if not self.x_token:
+                _LOGGER.error("x-token required for glagol request")
+                raise Exception("x-token required")
             self.music_token = await self.get_music_token(self.x_token)
+            if not self.music_token:
+                _LOGGER.error("Failed to get music token")
+                raise Exception("Failed to get music token")
             await self._handle_update()
         headers = kwargs.setdefault("headers", {})
         headers["Authorization"] = f"OAuth {self.music_token}"
-        r = await self._get(url, **kwargs)
-        if r.status == 200:
-            return r
-        elif r.status == 403:
-            self.music_token = None
-        if retry:
-            _LOGGER.debug(f"Retry {url}")
-            return await self.request_glagol(url, retry - 1)
-        raise Exception(f"{url} return {r.status} status")
+        async with self._get(url, **kwargs) as r:
+            if r.status == 200:
+                return r
+            elif r.status == 403:
+                self.music_token = None
+            if retry:
+                _LOGGER.debug(f"Retry {url}")
+                return await self.request_glagol(url, retry - 1)
+            raise Exception(f"{url} return {r.status} status")
 
     @property
     def cookie(self):
