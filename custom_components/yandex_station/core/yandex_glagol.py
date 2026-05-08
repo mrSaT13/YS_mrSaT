@@ -96,6 +96,7 @@ class YandexGlagol:
             _LOGGER.warning(f"[{self.name}] Glagol token host {host} in 403 cooldown until {until}")
             return None
 
+        r = None
         try:
             r = await self.session.get(
                 "https://quasar.yandex.net/glagol/token", params=payload, headers=headers
@@ -104,10 +105,10 @@ class YandexGlagol:
             _LOGGER.error(f"[{self.name}] Glagol token request failed: {e}")
             return None
 
-        _LOGGER.debug(f"[{self.name}] Glagol response status: {getattr(r, 'status', 'no-response')}")
-
-        # If we get explicit 403, set cooldown on session to avoid spamming
         try:
+            _LOGGER.debug(f"[{self.name}] Glagol response status: {getattr(r, 'status', 'no-response')}")
+
+            # If we get explicit 403, set cooldown on session to avoid spamming
             status = getattr(r, 'status', None)
             if status == 403:
                 try:
@@ -117,13 +118,9 @@ class YandexGlagol:
                 except Exception:
                     pass
                 _LOGGER.warning(f"[{self.name}] Glagol token returned 403; returning None and respecting cooldown")
-                r.close()
                 return None
-        except Exception:
-            pass
 
-        # @dext0r: fix bug with wrong content-type — читаем текст и парсим вручную
-        try:
+            # @dext0r: fix bug with wrong content-type — читаем текст и парсим вручную
             resp_text = await r.text()
             try:
                 resp = json.loads(resp_text)
@@ -136,7 +133,8 @@ class YandexGlagol:
 
             return resp["token"]
         finally:
-            r.close()
+            if r:
+                r.close()
 
     async def start_or_restart(self):
         # first time
