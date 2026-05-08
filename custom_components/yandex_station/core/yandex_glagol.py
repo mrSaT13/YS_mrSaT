@@ -71,7 +71,9 @@ class YandexGlagol:
             raise Exception("No tokens for glagol/token")
 
         # Минимальные заголовки — избегаем сжатия/фингерпринтинга
-        headers.setdefault("Accept-Encoding", "gzip, deflate")
+        # Use mobile UA and explicit Accept to match what Yandex expects
+        headers.setdefault("User-Agent", "com.yandex.mobile.auth.sdk/7.42.0 (Xiaomi Redmi; Android 10) Yandex")
+        headers.setdefault("Accept", "application/json")
         headers.setdefault("Connection", "keep-alive")
 
         _LOGGER.debug(f"[{self.name}] Glagol request headers: {list(headers.keys())}")
