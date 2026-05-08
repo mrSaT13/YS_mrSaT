@@ -9,6 +9,9 @@ import pickle
 import re
 import time
 import ssl
+import aiohttp
+from aiohttp import ClientSession, ClientConnectorError
+from urllib.parse import urlparse
 
 from aiohttp import ClientSession
 
@@ -153,6 +156,9 @@ class YandexSession(BasicSession):
 
         self.x_token = x_token
         self.music_token = music_token
+
+        # cooldowns for endpoints that returned 403: {key: timestamp_until}
+        self._forbidden_cooldowns: dict[str, float] = {}
         
         if cookie:
             self._load_cookies_from_base64(cookie)
@@ -473,6 +479,12 @@ class YandexSession(BasicSession):
 
     async def request(self, method: str, url: str, retry: int = 2, **kwargs):
         """Public request function with retry logic and minimal headers for Quasar."""
+        # If this URL/host is in cooldown after recent 403, avoid hitting it.
+        key = urlparse(url).netloc or url
+        until = self._forbidden_cooldowns.get(key)
+        if until and time.time() < until:
+            _LOGGER.warning(f"Cooldown active for {key} until {until}; skipping request to {url}")
+            raise Exception(f"{url} is in 403 cooldown")
         # Rate limiting
         while (delay := self.last_ts + 0.2 - time.time()) > 0:
             await asyncio.sleep(delay)
@@ -526,11 +538,19 @@ class YandexSession(BasicSession):
                             return await self.request(method, url, retry - 1, **kwargs)
                 elif r.status == 403:
                     _LOGGER.warning(f"403 Forbidden for {url}")
+                    # set cooldown for the host to avoid rapid repeated 403s
+                    host = urlparse(url).netloc
+                    cooldown = 300  # 5 minutes
+                    self._forbidden_cooldowns[host] = time.time() + cooldown
+                    _LOGGER.warning(f"Set 403 cooldown for {host} ({cooldown}s)")
+                    # Do not retry immediately; raise to caller so caller can decide
+                    raise Exception(f"{url} returned 403")
                 
                 if retry > 0:
                     _LOGGER.debug(f"Retrying {method} {url} (status {r.status})")
+                    await asyncio.sleep(1)
                     return await self.request(method, url, retry - 1, **kwargs)
-                    
+
                 raise Exception(f"{url} returned {r.status}")
         except asyncio.TimeoutError as e:
             _LOGGER.error(f"⏱️ Timeout for {method.upper()} {url}: {e}")
@@ -539,11 +559,19 @@ class YandexSession(BasicSession):
                 return await self.request(method, url, retry - 1, **kwargs)
             raise
         except Exception as e:
+            # If session is closed, re-raise with clear message
+            if isinstance(e, RuntimeError) and "closed" in str(e).lower():
+                _LOGGER.error(f"Session closed when requesting {url}: {e}")
+                raise
+
             _LOGGER.error(f"❌ Request error for {method.upper()} {url}: {type(e).__name__}: {e}")
-            if retry > 0 and "Connection" in str(type(e).__name__):
-                _LOGGER.debug(f"Connection error, retrying {url}")
-                await asyncio.sleep(1)
+            # Retry on common connection errors
+            if retry > 0 and isinstance(e, (ClientConnectorError, ConnectionResetError)):
+                _LOGGER.debug(f"Connection error ({type(e).__name__}), retrying {url}")
+                # exponential-ish backoff
+                await asyncio.sleep(1 + (3 - retry) * 2)
                 return await self.request(method, url, retry - 1, **kwargs)
+
             raise
 
     async def get(self, url: str, **kwargs):

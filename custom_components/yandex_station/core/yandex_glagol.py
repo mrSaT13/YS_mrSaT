@@ -8,6 +8,7 @@ from asyncio import Future
 from typing import Callable, Dict, Optional
 
 from aiohttp import ClientConnectorError, ClientWebSocketResponse, ServerTimeoutError
+from urllib.parse import urlparse
 from zeroconf import ServiceBrowser, ServiceStateChange, Zeroconf
 
 from .yandex_session import YandexSession
@@ -87,12 +88,37 @@ class YandexGlagol:
             auth_preview = f"{preview}... (len={len(a)})"
         _LOGGER.debug(f"[{self.name}] Glagol request headers: {list(headers.keys())} Authorization={auth_preview}")
         
-        r = await self.session.get(
-            "https://quasar.yandex.net/glagol/token", params=payload, headers=headers
-        )
-        
-        _LOGGER.debug(f"[{self.name}] Glagol response status: {r.status}")
-        
+        # Check for cooldown set by YandexSession on recent 403s
+        host = urlparse("https://quasar.yandex.net").netloc
+        cooldowns = getattr(self.session, "_forbidden_cooldowns", {})
+        until = cooldowns.get(host)
+        if until and time.time() < until:
+            _LOGGER.warning(f"[{self.name}] Glagol token host {host} in 403 cooldown until {until}")
+            return None
+
+        try:
+            r = await self.session.get(
+                "https://quasar.yandex.net/glagol/token", params=payload, headers=headers
+            )
+        except Exception as e:
+            _LOGGER.error(f"[{self.name}] Glagol token request failed: {e}")
+            return None
+
+        _LOGGER.debug(f"[{self.name}] Glagol response status: {getattr(r, 'status', 'no-response')}")
+
+        # If we get explicit 403, set cooldown on session to avoid spamming
+        try:
+            status = getattr(r, 'status', None)
+            if status == 403:
+                try:
+                    if hasattr(self.session, '_forbidden_cooldowns'):
+                        self.session._forbidden_cooldowns[host] = time.time() + 300
+                        _LOGGER.warning(f"[{self.name}] Set 403 cooldown for {host} (300s)")
+                except Exception:
+                    pass
+                _LOGGER.warning(f"[{self.name}] Glagol token returned 403; returning None and respecting cooldown")
+                return None
+
         # @dext0r: fix bug with wrong content-type — читаем текст и парсим вручную
         resp_text = await r.text()
         try:
@@ -134,6 +160,17 @@ class YandexGlagol:
         try:
             if not self.device_token:
                 self.device_token = await self.get_device_token()
+
+            # If token is not available (e.g. 403 cooldown), postpone local connect
+            if not self.device_token:
+                self.debug("Device token not available — postponing local connect")
+                # return to cloud mode and schedule retry
+                self.update_handler(None)
+                delay = 30
+                self.debug(f"Таймаут до следующей попытки получения токена {delay}s")
+                await asyncio.sleep(delay)
+                _ = asyncio.create_task(self._connect(fails))
+                return
 
             self.ws = await self.session.ws_connect(self.url, heartbeat=55, ssl=False)
             await self.ping(command="softwareVersion")
