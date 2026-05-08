@@ -218,7 +218,21 @@ class YandexQuasar(Dispatcher):
                 ssl=self.ssl_context  # Используем наш SSL контекст
             )
             _LOGGER.debug(f"Response status: {r.status}")
-            resp = await r.json()
+            _LOGGER.debug(f"Response headers: {dict(r.headers)}")
+            _LOGGER.debug(f"Response content-type: {r.content_type}")
+            
+            # Логируем первые 100 байт тела ответа
+            try:
+                resp = await r.json()
+            except Exception as json_err:
+                # Если ошибка при парсинге JSON, логируем текст ответа
+                try:
+                    text = await r.text()
+                    _LOGGER.error(f"Failed to parse JSON response: {json_err}. Response text: {text[:500]}")
+                except:
+                    _LOGGER.error(f"Failed to parse JSON and read response text: {json_err}")
+                raise
+            
             _LOGGER.debug(f"Response: {resp.get('status', 'unknown')}")
             assert resp["status"] == "ok", resp
 

@@ -460,15 +460,25 @@ class YandexSession(BasicSession):
         headers = kwargs.setdefault("headers", {})
         headers.setdefault("User-Agent", DEFAULT_UA)
         
-        # Если это запрос к Quasar/IoT, добавляем токен
-        if "quasar.yandex" in url or "alice.yandex" in url or "iot.quasar" in url:
+        # Если это запрос к Quasar/IoT, добавляем токен и специальные заголовки
+        if "iot.quasar" in url:
+            if self.x_token:
+                headers["Authorization"] = f"OAuth {self.x_token}"
+                headers.setdefault("Content-Type", "application/json")
+                headers.setdefault("Accept", "application/json")
+                headers.setdefault("Accept-Encoding", "gzip, deflate")
+                headers.setdefault("Connection", "keep-alive")
+                _LOGGER.debug(f"IoT Quasar request headers set for {url}")
+            else:
+                _LOGGER.error(f"x_token is empty for IoT Quasar request to {url}!")
+                raise Exception("x_token required for IoT Quasar request")
+        elif "quasar.yandex" in url or "alice.yandex" in url:
             if self.x_token:
                 headers["Authorization"] = f"OAuth {self.x_token}"
                 _LOGGER.debug(f"Added Authorization header for {url}")
-            else:
-                _LOGGER.warning(f"x_token is empty for {url}!")
 
         try:
+            _LOGGER.debug(f"Requesting {method.upper()} {url} with headers: {dict(headers)}")
             async with self._request(method, url, **kwargs) as r:
                 if r.status == 200:
                     return r
@@ -487,7 +497,8 @@ class YandexSession(BasicSession):
                     
                 raise Exception(f"{url} returned {r.status}")
         except Exception as e:
-            if retry > 0:
+            _LOGGER.error(f"Request error for {method.upper()} {url}: {type(e).__name__}: {e}", exc_info=True)
+            if retry > 0 and "Connection" in str(type(e).__name__):
                 _LOGGER.debug(f"Connection error, retrying {url}: {e}")
                 await asyncio.sleep(1)
                 return await self.request(method, url, retry - 1, **kwargs)
