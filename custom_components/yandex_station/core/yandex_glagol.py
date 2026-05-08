@@ -71,8 +71,8 @@ class YandexGlagol:
             raise Exception("No tokens for glagol/token")
 
         # Минимальные заголовки — избегаем сжатия/фингерпринтинга
-        headers.setdefault("Accept-Encoding", "identity")
-        headers.setdefault("Connection", "close")
+        headers.setdefault("Accept-Encoding", "gzip, deflate")
+        headers.setdefault("Connection", "keep-alive")
 
         _LOGGER.debug(f"[{self.name}] Glagol request headers: {list(headers.keys())}")
         

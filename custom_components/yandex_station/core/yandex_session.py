@@ -494,13 +494,9 @@ class YandexSession(BasicSession):
                     raise Exception("x_token required for Quasar request")
 
             # Минимальные заголовки - избегаем фингерпринтинга
-            headers.setdefault("Accept", "application/json, text/plain, */*")
-            headers.setdefault("Accept-Language", "ru-RU,ru;q=0.9,en;q=0.8")
-            headers.setdefault("Accept-Encoding", "identity")  # Отключаем сжатие!
-            headers.setdefault("Connection", "close")  # Закрываем соединение
-            # Отключаем автоматическую декомпрессию
-            kwargs["auto_decompress"] = False
-            _LOGGER.debug(f"Quasar request with minimal headers to {url}")
+            headers.setdefault("Accept", "application/json")
+            headers.setdefault("Connection", "keep-alive")
+            _LOGGER.debug(f"Quasar request to {url} with headers: {list(headers.keys())}")
         elif "alice.yandex" in url:
             if self.x_token:
                 headers["Authorization"] = f"OAuth {self.x_token}"

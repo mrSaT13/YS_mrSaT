@@ -239,10 +239,7 @@ class YandexQuasar(Dispatcher):
             
             # Минимальные заголовки как у обычного браузера - избегаем "фингерпринтинга"
             headers = {
-                "Accept": "application/json, text/plain, */*",
-                "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
-                "Accept-Encoding": "identity",  # Отключаем сжатие!
-                "Connection": "close",  # Закрываем соединение после запроса
+                "Accept": "application/json",
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
             }
             
@@ -259,7 +256,6 @@ class YandexQuasar(Dispatcher):
                 headers=headers,
                 timeout=aiohttp.ClientTimeout(total=30, sock_connect=10, sock_read=20),
                 ssl=self._get_ssl_context(),
-                auto_decompress=False,  # Отключаем автоматическую декомпрессию
             ) as r:
                 _LOGGER.info(f"✅ Response received: HTTP {r.status}")
                 _LOGGER.debug(f"Response headers: Content-Type={r.content_type}, Length={r.content_length}")
@@ -364,10 +360,7 @@ class YandexQuasar(Dispatcher):
         """Получает список сценариев."""
         # Делает минималистичный запрос и читает сырые байты, затем парсит JSON
         headers = {
-            "Accept": "application/json, text/plain, */*",
-            "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
-            "Accept-Encoding": "identity",
-            "Connection": "close",
+            "Accept": "application/json",
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
         }
         if self.session.x_token:
@@ -378,7 +371,6 @@ class YandexQuasar(Dispatcher):
             headers=headers,
             timeout=aiohttp.ClientTimeout(total=30, sock_connect=10, sock_read=20),
             ssl=self._get_ssl_context(),
-            auto_decompress=False,
         ) as r:
             _LOGGER.info(f"← GET /m/user/scenarios -> {r.status}")
             if r.status != 200:
