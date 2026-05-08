@@ -76,7 +76,16 @@ class YandexGlagol:
         headers.setdefault("Accept", "application/json")
         headers.setdefault("Connection", "keep-alive")
 
-        _LOGGER.debug(f"[{self.name}] Glagol request headers: {list(headers.keys())}")
+        # Log masked Authorization preview to debug which token is sent
+        auth_preview = None
+        if "Authorization" in headers:
+            a = headers["Authorization"]
+            try:
+                preview = a[:12]
+            except Exception:
+                preview = str(type(a))
+            auth_preview = f"{preview}... (len={len(a)})"
+        _LOGGER.debug(f"[{self.name}] Glagol request headers: {list(headers.keys())} Authorization={auth_preview}")
         
         r = await self.session.get(
             "https://quasar.yandex.net/glagol/token", params=payload, headers=headers

@@ -496,7 +496,15 @@ class YandexSession(BasicSession):
             # Минимальные заголовки - избегаем фингерпринтинга
             headers.setdefault("Accept", "application/json")
             headers.setdefault("Connection", "keep-alive")
-            _LOGGER.debug(f"Quasar request to {url} with headers: {list(headers.keys())}")
+            # Debug which Authorization (masked) is being used for Quasar requests
+            auth_preview = None
+            if "Authorization" in headers:
+                try:
+                    a = headers["Authorization"]
+                    auth_preview = f"{a[:12]}... (len={len(a)})"
+                except Exception:
+                    auth_preview = "<unavailable>"
+            _LOGGER.debug(f"Quasar request to {url} with headers: {list(headers.keys())} Authorization={auth_preview}")
         elif "alice.yandex" in url:
             if self.x_token:
                 headers["Authorization"] = f"OAuth {self.x_token}"
