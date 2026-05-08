@@ -218,19 +218,18 @@ class YandexStationFlowHandler(ConfigFlow, domain=DOMAIN):
     @staticmethod
     @callback
     def async_get_options_flow(config_entry: ConfigEntry):
-        return OptionsFlowHandler()
+        return OptionsFlowHandler(config_entry)
 
 
 class OptionsFlowHandler(OptionsFlow):
-    @property
-    def config_entry(self):
-        return self.hass.config_entries.async_get_entry(self.handler)
+    def __init__(self, config_entry: ConfigEntry):
+        self._config_entry = config_entry
 
     async def async_step_init(self, user_input: dict = None):
         if user_input:
             return self.async_create_entry(title="", data=user_input)
 
-        quasar: YandexQuasar = self.hass.data[DOMAIN][self.config_entry.unique_id]
+        quasar: YandexQuasar = self.hass.data[DOMAIN][self._config_entry.unique_id]
         devices = {i["id"]: device_name(i) for i in quasar.devices}
 
         # sort by names
