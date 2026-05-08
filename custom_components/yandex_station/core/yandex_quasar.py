@@ -487,6 +487,8 @@ class YandexQuasar(Dispatcher):
         except Exception as e:
             _LOGGER.error(f"Failed to parse device config: {e}")
             raise
+        finally:
+            r.close()
         assert resp["status"] == "ok", resp
         return resp["quasar_config"], resp["quasar_config_version"]
 
@@ -602,6 +604,8 @@ class YandexQuasar(Dispatcher):
             except Exception as e:
                 _LOGGER.error(f"Failed to parse online stats: {e}")
                 raise
+            finally:
+                r.close()
             assert resp["status"] == "ok", resp
         except Exception:
             return
@@ -630,6 +634,8 @@ class YandexQuasar(Dispatcher):
         except Exception as e:
             _LOGGER.error(f"Failed to parse devices in connect: {e}")
             raise
+        finally:
+            r.close()
         assert resp["status"] == "ok", resp
 
         for house in resp["households"]:

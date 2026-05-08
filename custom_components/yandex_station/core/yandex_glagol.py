@@ -117,22 +117,26 @@ class YandexGlagol:
                 except Exception:
                     pass
                 _LOGGER.warning(f"[{self.name}] Glagol token returned 403; returning None and respecting cooldown")
+                r.close()
                 return None
         except Exception:
             pass
 
         # @dext0r: fix bug with wrong content-type — читаем текст и парсим вручную
-        resp_text = await r.text()
         try:
-            resp = json.loads(resp_text)
-        except Exception as e:
-            _LOGGER.error(f"[{self.name}] Failed to parse glagol token response: {resp_text[:400]}")
-            raise
+            resp_text = await r.text()
+            try:
+                resp = json.loads(resp_text)
+            except Exception as e:
+                _LOGGER.error(f"[{self.name}] Failed to parse glagol token response: {resp_text[:400]}")
+                raise
 
-        _LOGGER.debug(f"[{self.name}] Glagol response status: {resp.get('status')}")
-        assert resp["status"] == "ok", resp
+            _LOGGER.debug(f"[{self.name}] Glagol response status: {resp.get('status')}")
+            assert resp["status"] == "ok", resp
 
-        return resp["token"]
+            return resp["token"]
+        finally:
+            r.close()
 
     async def start_or_restart(self):
         # first time
