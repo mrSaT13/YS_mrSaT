@@ -486,7 +486,14 @@ class YandexQuasar(Dispatcher):
         r = await self.session.get(
             f"https://iot.quasar.yandex.ru/m/v2/user/devices/{did}/configuration"
         )
-        resp = await r.json()
+        try:
+            raw = await asyncio.wait_for(r.read(), timeout=20)
+            resp = json.loads(raw.decode('utf-8', errors='replace'))
+        except asyncio.TimeoutError:
+            raise Exception(f"Timeout reading device config for {did}")
+        except Exception as e:
+            _LOGGER.error(f"Failed to parse device config: {e}")
+            raise
         assert resp["status"] == "ok", resp
         return resp["quasar_config"], resp["quasar_config_version"]
 
@@ -594,7 +601,14 @@ class YandexQuasar(Dispatcher):
             r = await self.session.get(
                 "https://quasar.yandex.ru/devices_online_stats"
             )
-            resp = await r.json()
+            try:
+                raw = await asyncio.wait_for(r.read(), timeout=20)
+                resp = json.loads(raw.decode('utf-8', errors='replace'))
+            except asyncio.TimeoutError:
+                raise Exception("Timeout reading online stats")
+            except Exception as e:
+                _LOGGER.error(f"Failed to parse online stats: {e}")
+                raise
             assert resp["status"] == "ok", resp
         except:
             return
@@ -615,7 +629,14 @@ class YandexQuasar(Dispatcher):
         r = await self.session.get(
             "https://iot.quasar.yandex.ru/m/v3/user/devices"
         )
-        resp = await r.json()
+        try:
+            raw = await asyncio.wait_for(r.read(), timeout=20)
+            resp = json.loads(raw.decode('utf-8', errors='replace'))
+        except asyncio.TimeoutError:
+            raise Exception("Timeout reading devices for connect")
+        except Exception as e:
+            _LOGGER.error(f"Failed to parse devices in connect: {e}")
+            raise
         assert resp["status"] == "ok", resp
 
         for house in resp["households"]:

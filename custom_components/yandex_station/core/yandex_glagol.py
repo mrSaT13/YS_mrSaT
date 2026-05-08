@@ -57,25 +57,40 @@ class YandexGlagol:
         headers = {}
         music = getattr(self.session, "music_token", None)
         x_token = getattr(self.session, "x_token", None)
+        
+        _LOGGER.debug(f"[{self.name}] glagol token request: music_token={bool(music)}, x_token={bool(x_token)}")
+        
         if music:
             headers["Authorization"] = f"OAuth {music}"
+            _LOGGER.debug(f"[{self.name}] Using music_token for glagol")
         elif x_token:
             headers["Authorization"] = f"OAuth {x_token}"
+            _LOGGER.debug(f"[{self.name}] Using x_token for glagol (music_token not available)")
+        else:
+            _LOGGER.error(f"[{self.name}] No tokens available for glagol!")
+            raise Exception("No tokens for glagol/token")
 
         # Минимальные заголовки — избегаем сжатия/фингерпринтинга
         headers.setdefault("Accept-Encoding", "identity")
         headers.setdefault("Connection", "close")
 
+        _LOGGER.debug(f"[{self.name}] Glagol request headers: {list(headers.keys())}")
+        
         r = await self.session.get(
             "https://quasar.yandex.net/glagol/token", params=payload, headers=headers
         )
+        
+        _LOGGER.debug(f"[{self.name}] Glagol response status: {r.status}")
+        
         # @dext0r: fix bug with wrong content-type — читаем текст и парсим вручную
         resp_text = await r.text()
         try:
             resp = json.loads(resp_text)
-        except Exception:
-            _LOGGER.error(f"Failed to parse glagol token response: {resp_text[:400]}")
+        except Exception as e:
+            _LOGGER.error(f"[{self.name}] Failed to parse glagol token response: {resp_text[:400]}")
             raise
+
+        _LOGGER.debug(f"[{self.name}] Glagol response status: {resp.get('status')}")
         assert resp["status"] == "ok", resp
 
         return resp["token"]

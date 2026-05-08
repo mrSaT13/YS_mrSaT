@@ -291,6 +291,15 @@ class YandexSession(BasicSession):
             self.x_token = credentials.x_token.get_secret() if hasattr(credentials.x_token, 'get_secret') else str(credentials.x_token)
             self.music_token = credentials.music_token.get_secret() if hasattr(credentials.music_token, 'get_secret') and credentials.music_token else None
             
+            # Если music_token не был получен из credentials — получим его явно
+            if not self.music_token and self.x_token:
+                _LOGGER.debug("Music token not in credentials, fetching separately...")
+                try:
+                    self.music_token = await self.get_music_token(self.x_token)
+                    _LOGGER.info(f"✅ Music token obtained: {bool(self.music_token)}")
+                except Exception as e:
+                    _LOGGER.warning(f"Failed to get music token: {e}")
+            
             return await self.validate_token(self.x_token)
             
         except QRTimeoutError:
