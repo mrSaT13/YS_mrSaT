@@ -463,7 +463,7 @@ class YandexSession(BasicSession):
             return None
 
     async def request(self, method: str, url: str, retry: int = 2, **kwargs):
-        """Public request function with retry logic."""
+        """Public request function with retry logic and minimal headers for Quasar."""
         # Rate limiting
         while (delay := self.last_ts + 0.2 - time.time()) > 0:
             await asyncio.sleep(delay)
@@ -473,23 +473,25 @@ class YandexSession(BasicSession):
         headers = kwargs.setdefault("headers", {})
         headers.setdefault("User-Agent", DEFAULT_UA)
         
-        # Если это запрос к Quasar/IoT, добавляем токен и специальные заголовки
-        if "iot.quasar" in url:
+        # Если это запрос к Quasar/IoT, добавляем токен и МИНИМАЛЬНЫЕ заголовки
+        if "iot.quasar" in url or "quasar.yandex" in url:
             if self.x_token:
                 headers["Authorization"] = f"OAuth {self.x_token}"
-                headers.setdefault("Content-Type", "application/json")
-                headers.setdefault("Accept", "application/json")
-                headers.setdefault("Accept-Encoding", "gzip, deflate")
-                headers.setdefault("Connection", "keep-alive")
-                _LOGGER.info(f"🔑 IoT Quasar request prepared")
-                _LOGGER.debug(f"Headers: Authorization=***{self.x_token[-10:]}, User-Agent={headers.get('User-Agent')[:50]}")
+                # Минимальные заголовки - избегаем фингерпринтинга
+                headers.setdefault("Accept", "application/json, text/plain, */*")
+                headers.setdefault("Accept-Language", "ru-RU,ru;q=0.9,en;q=0.8")
+                headers.setdefault("Accept-Encoding", "identity")  # Отключаем сжатие!
+                headers.setdefault("Connection", "close")  # Закрываем соединение
+                # Отключаем автоматическую декомпрессию
+                kwargs["auto_decompress"] = False
+                _LOGGER.debug(f"Quasar request with minimal headers to {url}")
             else:
-                _LOGGER.error(f"❌ x_token is empty for IoT Quasar request to {url}!")
-                raise Exception("x_token required for IoT Quasar request")
-        elif "quasar.yandex" in url or "alice.yandex" in url:
+                _LOGGER.error(f"❌ x_token is empty for Quasar request to {url}!")
+                raise Exception("x_token required for Quasar request")
+        elif "alice.yandex" in url:
             if self.x_token:
                 headers["Authorization"] = f"OAuth {self.x_token}"
-                _LOGGER.debug(f"Added Authorization header for {url}")
+                _LOGGER.debug(f"Added Authorization header for Alice {url}")
 
         try:
             _LOGGER.debug(f"→ {method.upper()} {url}")

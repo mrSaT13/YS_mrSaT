@@ -228,77 +228,91 @@ class YandexQuasar(Dispatcher):
         return self.ssl_context
 
     async def init(self):
-        """Основная функция. Возвращает список колонок."""
+        """Основная функция - минималистичный запрос без "фингерпринтинга"."""
         _LOGGER.info("=" * 70)
         _LOGGER.info("🚀 QUASAR INITIALIZATION STARTED")
         _LOGGER.debug(f"x_token present: {bool(self.session.x_token)}")
         _LOGGER.debug(f"x_token length: {len(self.session.x_token or '')}")
-        _LOGGER.debug(f"SSL verify: {self._get_ssl_context().check_hostname}, mode: {self._get_ssl_context().verify_mode}")
 
         try:
-            _LOGGER.info("📡 Sending request to iot.quasar.yandex.ru...")
+            _LOGGER.info("📡 Sending minimal request to iot.quasar.yandex.ru...")
             
-            # Increased socket read timeout to 20s for body read
-            r = await self.session.get(
-                "https://iot.quasar.yandex.ru/m/v3/user/devices", 
+            # Минимальные заголовки как у обычного браузера - избегаем "фингерпринтинга"
+            headers = {
+                "Accept": "application/json, text/plain, */*",
+                "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
+                "Accept-Encoding": "identity",  # Отключаем сжатие!
+                "Connection": "close",  # Закрываем соединение после запроса
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            }
+            
+            if self.session.x_token:
+                headers["Authorization"] = f"OAuth {self.session.x_token}"
+                _LOGGER.debug(f"Authorization header added (token length: {len(self.session.x_token)})")
+            else:
+                _LOGGER.error("❌ x_token is empty!")
+                raise Exception("x_token required")
+            
+            # Прямой запрос через внутреннюю сессию с минимальными параметрами
+            async with self.session._session.get(
+                "https://iot.quasar.yandex.ru/m/v3/user/devices",
+                headers=headers,
                 timeout=aiohttp.ClientTimeout(total=30, sock_connect=10, sock_read=20),
-                ssl=self._get_ssl_context()
-            )
-            
-            _LOGGER.info(f"✅ Response received: HTTP {r.status}")
-            _LOGGER.debug(f"Content-Type: {r.content_type}, Length: {r.content_length}")
-            
-            # Log all response headers to debug connection issues
-            _LOGGER.debug(f"Transfer-Encoding: {r.headers.get('Transfer-Encoding', 'N/A')}")
-            _LOGGER.debug(f"Connection: {r.headers.get('Connection', 'N/A')}")
-            _LOGGER.debug(f"Content-Encoding: {r.headers.get('Content-Encoding', 'N/A')}")
-            _LOGGER.debug(f"All headers: {dict(r.headers)}")
-            
-            if r.status != 200:
-                try:
-                    error_text = await asyncio.wait_for(r.text(), timeout=5)
-                    _LOGGER.error(f"HTTP {r.status} error: {error_text[:300]}")
-                except:
-                    _LOGGER.error(f"HTTP {r.status} (could not read error body)")
-                raise Exception(f"IoT Quasar returned {r.status}")
-            
-            _LOGGER.info("📖 Reading response body...")
-            try:
-                # First try to read raw text with extended timeout
-                body_text = await asyncio.wait_for(r.text(), timeout=20)
-                _LOGGER.debug(f"📄 Body received: {len(body_text)} chars, first 200: {body_text[:200]}")
+                ssl=self._get_ssl_context(),
+                auto_decompress=False,  # Отключаем автоматическую декомпрессию
+            ) as r:
+                _LOGGER.info(f"✅ Response received: HTTP {r.status}")
+                _LOGGER.debug(f"Response headers: Content-Type={r.content_type}, Length={r.content_length}")
                 
-                _LOGGER.info("📖 Parsing JSON from body...")
-                resp = json.loads(body_text)
-                status = resp.get('status', 'unknown')
-                _LOGGER.info(f"✅ JSON parsed. API status: '{status}'")
-            except asyncio.TimeoutError:
-                _LOGGER.error("⏱️ TIMEOUT reading response body (>20s)")
-                raise Exception("Timeout reading response body")
-            except json.JSONDecodeError as je:
-                _LOGGER.error(f"❌ JSON decode error at line {je.lineno}, col {je.colno}: {je.msg}")
-                _LOGGER.error(f"Body start: {body_text[:500] if 'body_text' in locals() else 'N/A'}")
-                raise
-            except Exception as e:
-                _LOGGER.error(f"❌ Body read error: {type(e).__name__}: {e}")
-                raise
-            
-            if resp.get("status") != "ok":
-                _LOGGER.error(f"API returned status '{status}' instead of 'ok'")
-                raise Exception(f"Invalid API status: {status}")
+                if r.status != 200:
+                    try:
+                        raw_text = await asyncio.wait_for(r.text(), timeout=5)
+                        _LOGGER.error(f"HTTP {r.status} error: {raw_text[:300]}")
+                    except:
+                        _LOGGER.error(f"HTTP {r.status} (could not read error body)")
+                    raise Exception(f"IoT Quasar returned {r.status}")
+                
+                _LOGGER.info("📖 Reading response body via r.read()...")
+                try:
+                    # Читаем сырые байты вместо r.text() - избегаем потенциальных проблем с декодированием
+                    raw_bytes = await asyncio.wait_for(r.read(), timeout=20)
+                    _LOGGER.debug(f"📄 Raw bytes received: {len(raw_bytes)} bytes")
+                    
+                    # Декодируем вручную
+                    body_text = raw_bytes.decode('utf-8', errors='replace')
+                    _LOGGER.debug(f"Decoded text preview: {body_text[:200]}")
+                    
+                    _LOGGER.info("📖 Parsing JSON from body...")
+                    resp = json.loads(body_text)
+                    status = resp.get('status', 'unknown')
+                    _LOGGER.info(f"✅ JSON parsed. API status: '{status}'")
+                    
+                except asyncio.TimeoutError:
+                    _LOGGER.error("⏱️ TIMEOUT reading response body (>20s)")
+                    raise Exception("Timeout reading response body")
+                except json.JSONDecodeError as je:
+                    _LOGGER.error(f"❌ JSON decode error: {je}")
+                    raise
+                except Exception as e:
+                    _LOGGER.error(f"❌ Body read error: {type(e).__name__}: {e}")
+                    raise
+                
+                if resp.get("status") != "ok":
+                    _LOGGER.error(f"API returned status '{status}' instead of 'ok'")
+                    raise Exception(f"Invalid API status: {status}")
 
-            self.devices = []
-            household_count = len(resp.get("households", []))
-            _LOGGER.info(f"📦 Processing {household_count} households...")
+                self.devices = []
+                household_count = len(resp.get("households", []))
+                _LOGGER.info(f"📦 Processing {household_count} households...")
 
-            for house in resp["households"]:
-                device_list = house.get("all", [])
-                _LOGGER.debug(f"  {house.get('name')}: {len(device_list)} devices")
-                self.devices.extend(
-                    {**device, "house_name": house["name"]} for device in device_list
-                )
-            
-            _LOGGER.info(f"✅ Total devices loaded: {len(self.devices)}")
+                for house in resp["households"]:
+                    device_list = house.get("all", [])
+                    _LOGGER.debug(f"  {house.get('name')}: {len(device_list)} devices")
+                    self.devices.extend(
+                        {**device, "house_name": house["name"]} for device in device_list
+                    )
+                
+                _LOGGER.info(f"✅ Total devices loaded: {len(self.devices)}")
 
             await self.load_scenarios()
             await self.load_speakers()
@@ -340,8 +354,7 @@ class YandexQuasar(Dispatcher):
     async def load_speaker_config(self, device: dict):
         """Загружаем device_id и platform для колонок."""
         r = await self.session.get(
-            f"https://iot.quasar.yandex.ru/m/user/devices/{device['id']}/configuration",
-            ssl=self._get_ssl_context()
+            f"https://iot.quasar.yandex.ru/m/user/devices/{device['id']}/configuration"
         )
         resp = await r.json()
         assert resp["status"] == "ok", resp
@@ -350,8 +363,7 @@ class YandexQuasar(Dispatcher):
     async def load_scenarios(self):
         """Получает список сценариев."""
         r = await self.session.get(
-            f"https://iot.quasar.yandex.ru/m/user/scenarios",
-            ssl=self._get_ssl_context()
+            f"https://iot.quasar.yandex.ru/m/user/scenarios"
         )
         resp = await r.json()
         assert resp["status"] == "ok", resp
@@ -367,8 +379,7 @@ class YandexQuasar(Dispatcher):
             sid = next(i["id"] for i in self.scenarios if i["name"] == name)
 
         r = await self.session.get(
-            f"https://iot.quasar.yandex.ru/m/v4/user/scenarios/{sid}/edit",
-            ssl=self._get_ssl_context()
+            f"https://iot.quasar.yandex.ru/m/v4/user/scenarios/{sid}/edit"
         )
         resp = await r.json()
         assert resp["status"] == "ok"
@@ -376,8 +387,7 @@ class YandexQuasar(Dispatcher):
         payload = parse_scenario(resp["scenario"])
         r = await self.session.put(
             f"https://iot.quasar.yandex.ru/m/v3/user/scenarios/{sid}", 
-            json=payload,
-            ssl=self._get_ssl_context()
+            json=payload
         )
         resp = await r.json()
         assert resp["status"] == "ok", resp
@@ -387,8 +397,7 @@ class YandexQuasar(Dispatcher):
         payload = scenario_speaker_tts("ХА " + device_id, hash, device_id, "пустышка")
         r = await self.session.post(
             f"https://iot.quasar.yandex.ru/m/v4/user/scenarios", 
-            json=payload,
-            ssl=self._get_ssl_context()
+            json=payload
         )
         resp = await r.json()
         assert resp["status"] == "ok", resp
@@ -413,15 +422,13 @@ class YandexQuasar(Dispatcher):
 
         r = await self.session.put(
             f"https://iot.quasar.yandex.ru/m/v4/user/scenarios/{sid}", 
-            json=payload,
-            ssl=self._get_ssl_context()
+            json=payload
         )
         resp = await r.json()
         assert resp["status"] == "ok", resp
 
         r = await self.session.post(
-            f"https://iot.quasar.yandex.ru/m/user/scenarios/{sid}/actions",
-            ssl=self.ssl_context
+            f"https://iot.quasar.yandex.ru/m/user/scenarios/{sid}/actions"
         )
         resp = await r.json()
         assert resp["status"] == "ok", resp
@@ -430,8 +437,7 @@ class YandexQuasar(Dispatcher):
         """Загружает список локальных колонок."""
         try:
             r = await self.session.get(
-                "https://quasar.yandex.net/glagol/device_list",
-                ssl=self.ssl_context
+                "https://quasar.yandex.net/glagol/device_list"
             )
             resp = await r.json()
             return [
@@ -446,8 +452,7 @@ class YandexQuasar(Dispatcher):
     async def get_device_config(self, device: dict) -> (dict, str):
         did = device["id"]
         r = await self.session.get(
-            f"https://iot.quasar.yandex.ru/m/v2/user/devices/{did}/configuration",
-            ssl=self.ssl_context
+            f"https://iot.quasar.yandex.ru/m/v2/user/devices/{did}/configuration"
         )
         resp = await r.json()
         assert resp["status"] == "ok", resp
@@ -459,16 +464,14 @@ class YandexQuasar(Dispatcher):
         did = device["id"]
         r = await self.session.post(
             f"https://iot.quasar.yandex.ru/m/v3/user/devices/{did}/configuration/quasar",
-            json={"config": config, "version": version},
-            ssl=self.ssl_context
+            json={"config": config, "version": version}
         )
         resp = await r.json()
         assert resp["status"] == "ok", resp
 
     async def get_device(self, device: dict):
         r = await self.session.get(
-            f"https://iot.quasar.yandex.ru/m/user/{device['item_type']}s/{device['id']}",
-            ssl=self.ssl_context
+            f"https://iot.quasar.yandex.ru/m/user/{device['item_type']}s/{device['id']}"
         )
         resp = await r.json()
         assert resp["status"] == "ok", resp
@@ -485,8 +488,7 @@ class YandexQuasar(Dispatcher):
 
         r = await self.session.post(
             f"https://iot.quasar.yandex.ru/m/user/{device['item_type']}s/{device['id']}/actions",
-            json={"actions": [action]},
-            ssl=self.ssl_context
+            json={"actions": [action]}
         )
         resp = await r.json()
         assert resp["status"] == "ok", resp
@@ -505,7 +507,7 @@ class YandexQuasar(Dispatcher):
         }
 
         url = f"https://iot.quasar.yandex.ru/m/user/{device['item_type']}s/{device['id']}/actions"
-        r = await self.session.post(url, json={"actions": [action]}, ssl=self.ssl_context)
+        r = await self.session.post(url, json={"actions": [action]})
         resp = await r.json()
         assert resp["status"] == "ok", resp
 
@@ -528,8 +530,7 @@ class YandexQuasar(Dispatcher):
 
         r = await self.session.post(
             f"https://iot.quasar.yandex.ru/m/user/{device['item_type']}s/{device['id']}/actions",
-            json={"actions": actions},
-            ssl=self.ssl_context
+            json={"actions": actions}
         )
         resp = await r.json()
         assert resp["status"] == "ok", resp
@@ -542,8 +543,7 @@ class YandexQuasar(Dispatcher):
 
         r = await self.session.post(
             f"https://iot.quasar.yandex.ru/m/v3/user/custom/group/color/apply",
-            json={"device_ids": [device['id']], **kwargs},
-            ssl=self.ssl_context
+            json={"device_ids": [device['id']], **kwargs}
         )
         resp = await r.json()
         assert resp["status"] == "ok", resp
@@ -560,8 +560,7 @@ class YandexQuasar(Dispatcher):
 
         try:
             r = await self.session.get(
-                "https://quasar.yandex.ru/devices_online_stats",
-                ssl=self.ssl_context
+                "https://quasar.yandex.ru/devices_online_stats"
             )
             resp = await r.json()
             assert resp["status"] == "ok", resp
@@ -582,8 +581,7 @@ class YandexQuasar(Dispatcher):
 
     async def connect(self):
         r = await self.session.get(
-            "https://iot.quasar.yandex.ru/m/v3/user/devices",
-            ssl=self.ssl_context
+            "https://iot.quasar.yandex.ru/m/v3/user/devices"
         )
         resp = await r.json()
         assert resp["status"] == "ok", resp
@@ -616,8 +614,7 @@ class YandexQuasar(Dispatcher):
         try:
             r = await self.session.get(
                 f"https://iot.quasar.yandex.ru/m/v3/user/devices", 
-                timeout=15,
-                ssl=self.ssl_context
+                timeout=15
             )
             resp = await r.json()
             assert resp["status"] == "ok", resp
@@ -633,8 +630,7 @@ class YandexQuasar(Dispatcher):
     async def get_voice_trigger(self, retries: int = 0):
         try:
             r = await self.session.get(
-                "https://iot.quasar.yandex.ru/m/user/scenarios/history",
-                ssl=self.ssl_context
+                "https://iot.quasar.yandex.ru/m/user/scenarios/history"
             )
             raw = await r.json()
 
@@ -645,8 +641,7 @@ class YandexQuasar(Dispatcher):
                 return
 
             r = await self.session.get(
-                f"https://iot.quasar.yandex.ru/m/v4/user/scenarios/launches/{scenario['id']}",
-                ssl=self.ssl_context
+                f"https://iot.quasar.yandex.ru/m/v4/user/scenarios/launches/{scenario['id']}"
             )
             raw = await r.json()
 
@@ -686,14 +681,12 @@ class YandexQuasar(Dispatcher):
         if kv.get("api") == "user/settings":
             r = await self.session.post(
                 f"https://iot.quasar.yandex.ru/m/user/settings",
-                json={kv["key"]: kv["values"][value]},
-                ssl=self.ssl_context
+                json={kv["key"]: kv["values"][value]}
             )
 
         else:
             r = await self.session.get(
-                "https://quasar.yandex.ru/get_account_config",
-                ssl=self.ssl_context
+                "https://quasar.yandex.ru/get_account_config"
             )
             resp = await r.json()
             assert resp["status"] == "ok", resp
@@ -703,8 +696,7 @@ class YandexQuasar(Dispatcher):
 
             r = await self.session.post(
                 "https://quasar.yandex.ru/set_account_config", 
-                json=payload,
-                ssl=self.ssl_context
+                json=payload
             )
 
         resp = await r.json()
@@ -714,8 +706,7 @@ class YandexQuasar(Dispatcher):
         r = await self.session.post(
             "https://rpc.alice.yandex.ru/gproxy/get_alarms",
             json={"device_ids": [device["quasar_info"]["device_id"]]},
-            headers=ALARM_HEADERS,
-            ssl=self.ssl_context
+            headers=ALARM_HEADERS
         )
         resp = await r.json()
         return resp["alarms"]
@@ -725,8 +716,7 @@ class YandexQuasar(Dispatcher):
         resp = await self.session.post(
             "https://rpc.alice.yandex.ru/gproxy/create_alarm",
             json={"alarm": alarm, "device_type": device["type"]},
-            headers=ALARM_HEADERS,
-            ssl=self.ssl_context
+            headers=ALARM_HEADERS
         )
         return resp.ok
 
@@ -735,8 +725,7 @@ class YandexQuasar(Dispatcher):
         resp = await self.session.post(
             "https://rpc.alice.yandex.ru/gproxy/change_alarm",
             json={"alarm": alarm, "device_type": device["type"]},
-            headers=ALARM_HEADERS,
-            ssl=self.ssl_context
+            headers=ALARM_HEADERS
         )
         return resp.ok
 
@@ -751,8 +740,7 @@ class YandexQuasar(Dispatcher):
                     }
                 ],
             },
-            headers=ALARM_HEADERS,
-            ssl=self.ssl_context
+            headers=ALARM_HEADERS
         )
         return resp.ok
 
