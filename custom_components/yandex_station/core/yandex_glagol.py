@@ -53,11 +53,29 @@ class YandexGlagol:
             "device_id": self.device["quasar_info"]["device_id"],
             "platform": self.device["quasar_info"]["platform"],
         }
+        # Передаём Authorization с music_token если он есть (glagol требует music token)
+        headers = {}
+        music = getattr(self.session, "music_token", None)
+        x_token = getattr(self.session, "x_token", None)
+        if music:
+            headers["Authorization"] = f"OAuth {music}"
+        elif x_token:
+            headers["Authorization"] = f"OAuth {x_token}"
+
+        # Минимальные заголовки — избегаем сжатия/фингерпринтинга
+        headers.setdefault("Accept-Encoding", "identity")
+        headers.setdefault("Connection", "close")
+
         r = await self.session.get(
-            "https://quasar.yandex.net/glagol/token", params=payload
+            "https://quasar.yandex.net/glagol/token", params=payload, headers=headers
         )
-        # @dext0r: fix bug with wrong content-type
-        resp = json.loads(await r.text())
+        # @dext0r: fix bug with wrong content-type — читаем текст и парсим вручную
+        resp_text = await r.text()
+        try:
+            resp = json.loads(resp_text)
+        except Exception:
+            _LOGGER.error(f"Failed to parse glagol token response: {resp_text[:400]}")
+            raise
         assert resp["status"] == "ok", resp
 
         return resp["token"]
