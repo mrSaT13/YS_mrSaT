@@ -217,14 +217,14 @@ class YandexStationFlowHandler(ConfigFlow, domain=DOMAIN):
 
         raise AbortFlow("not_implemented")
 
-    @staticmethod
     @callback
-    def async_get_options_flow(config_entry: ConfigEntry):
+    def async_get_options_flow(self, config_entry: ConfigEntry):
         return OptionsFlowHandler(config_entry)
 
 
 class OptionsFlowHandler(OptionsFlow):
     def __init__(self, config_entry: ConfigEntry):
+        super().__init__(config_entry)
         self._config_entry = config_entry
 
     async def async_step_init(self, user_input: dict = None):

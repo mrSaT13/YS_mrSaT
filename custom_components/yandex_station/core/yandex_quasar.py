@@ -227,34 +227,7 @@ class YandexQuasar(Dispatcher):
         self._ssl_context_created = True
         return self.ssl_context
 
-    async def _safe_read_json(self, r, timeout: int = 20, context: str = "response") -> dict | None:
-        """Безопасно читаем тело ответа и парсим JSON.
 
-        Возвращает распарсенный JSON или None при ошибке/таймауте.
-        Логируем подробности для диагностики.
-        """
-        try:
-            raw = await asyncio.wait_for(r.read(), timeout=timeout)
-        except asyncio.TimeoutError:
-            _LOGGER.error(f"⏱️ TIMEOUT reading {context} (> {timeout}s)")
-            return None
-        except aiohttp.ClientConnectionError as e:
-            _LOGGER.error(f"❌ ClientConnectionError while reading {context}: {e}")
-            return None
-        except Exception as e:
-            _LOGGER.error(f"❌ Error while reading {context}: {type(e).__name__}: {e}")
-            return None
-
-        try:
-            body_text = raw.decode("utf-8", errors="replace")
-        except Exception:
-            body_text = raw.decode("utf-8", errors="replace")
-
-        try:
-            return json.loads(body_text)
-        except json.JSONDecodeError as je:
-            _LOGGER.error(f"❌ JSON decode error for {context}: {je}; body start: {body_text[:300]}")
-            return None
 
     async def init(self):
         """Основная функция - минималистичный запрос без "фингерпринтинга"."""
@@ -297,12 +270,30 @@ class YandexQuasar(Dispatcher):
                         _LOGGER.error(f"HTTP {r.status} (could not read error body)")
                     raise Exception(f"IoT Quasar returned {r.status}")
                 
-                _LOGGER.info("📖 Reading and parsing JSON response body...")
-                resp = await self._safe_read_json(r, timeout=20, context="init devices")
-                if resp is None:
-                    raise Exception("Failed to read or parse response body during init")
-                status = resp.get("status", "unknown")
-                _LOGGER.info(f"✅ JSON parsed. API status: '{status}'")
+                _LOGGER.info("📖 Reading response body via r.read()...")
+                try:
+                    # Читаем сырые байты вместо r.text() - избегаем потенциальных проблем с декодированием
+                    raw_bytes = await asyncio.wait_for(r.read(), timeout=20)
+                    _LOGGER.debug(f"📄 Raw bytes received: {len(raw_bytes)} bytes")
+                    
+                    # Декодируем вручную
+                    body_text = raw_bytes.decode('utf-8', errors='replace')
+                    _LOGGER.debug(f"Decoded text preview: {body_text[:200]}")
+                    
+                    _LOGGER.info("📖 Parsing JSON from body...")
+                    resp = json.loads(body_text)
+                    status = resp.get('status', 'unknown')
+                    _LOGGER.info(f"✅ JSON parsed. API status: '{status}'")
+                    
+                except asyncio.TimeoutError:
+                    _LOGGER.error("⏱️ TIMEOUT reading response body (>20s)")
+                    raise Exception("Timeout reading response body")
+                except json.JSONDecodeError as je:
+                    _LOGGER.error(f"❌ JSON decode error: {je}")
+                    raise
+                except Exception as e:
+                    _LOGGER.error(f"❌ Body read error: {type(e).__name__}: {e}")
+                    raise
                 if resp.get("status") != "ok":
                     _LOGGER.error(f"API returned status '{status}' instead of 'ok'")
                     raise Exception(f"Invalid API status: {status}")
@@ -387,9 +378,19 @@ class YandexQuasar(Dispatcher):
                 text = await r.text()
                 raise Exception(f"Scenarios fetch failed: {r.status} {text[:200]}")
 
-            resp = await self._safe_read_json(r, timeout=20, context="scenarios")
-            if resp is None:
-                raise Exception("Failed to read or parse scenarios body")
+            try:
+                raw = await asyncio.wait_for(r.read(), timeout=20)
+            except asyncio.TimeoutError:
+                raise Exception("Timeout reading scenarios body")
+            except Exception as e:
+                raise
+
+            body = raw.decode("utf-8", errors="replace")
+            try:
+                resp = json.loads(body)
+            except json.JSONDecodeError as e:
+                _LOGGER.error(f"Failed to decode scenarios JSON: {e}; body start: {body[:300]}")
+                raise
 
         assert resp.get("status") == "ok", resp
         self.scenarios = resp["scenarios"]
@@ -478,9 +479,14 @@ class YandexQuasar(Dispatcher):
         r = await self.session.get(
             f"https://iot.quasar.yandex.ru/m/v2/user/devices/{did}/configuration"
         )
-        resp = await self._safe_read_json(r, timeout=20, context=f"device config {did}")
-        if resp is None:
-            raise Exception(f"Failed to read device config for {did}")
+        try:
+            raw = await asyncio.wait_for(r.read(), timeout=20)
+            resp = json.loads(raw.decode('utf-8', errors='replace'))
+        except asyncio.TimeoutError:
+            raise Exception(f"Timeout reading device config for {did}")
+        except Exception as e:
+            _LOGGER.error(f"Failed to parse device config: {e}")
+            raise
         assert resp["status"] == "ok", resp
         return resp["quasar_config"], resp["quasar_config_version"]
 
@@ -588,9 +594,14 @@ class YandexQuasar(Dispatcher):
             r = await self.session.get(
                 "https://quasar.yandex.ru/devices_online_stats"
             )
-            resp = await self._safe_read_json(r, timeout=20, context="online stats")
-            if resp is None:
-                raise Exception("Failed to read online stats")
+            try:
+                raw = await asyncio.wait_for(r.read(), timeout=20)
+                resp = json.loads(raw.decode('utf-8', errors='replace'))
+            except asyncio.TimeoutError:
+                raise Exception("Timeout reading online stats")
+            except Exception as e:
+                _LOGGER.error(f"Failed to parse online stats: {e}")
+                raise
             assert resp["status"] == "ok", resp
         except Exception:
             return
@@ -611,9 +622,14 @@ class YandexQuasar(Dispatcher):
         r = await self.session.get(
             "https://iot.quasar.yandex.ru/m/v3/user/devices"
         )
-        resp = await self._safe_read_json(r, timeout=20, context="connect devices")
-        if resp is None:
-            raise Exception("Failed to read devices response in connect")
+        try:
+            raw = await asyncio.wait_for(r.read(), timeout=20)
+            resp = json.loads(raw.decode('utf-8', errors='replace'))
+        except asyncio.TimeoutError:
+            raise Exception("Timeout reading devices for connect")
+        except Exception as e:
+            _LOGGER.error(f"Failed to parse devices in connect: {e}")
+            raise
         assert resp["status"] == "ok", resp
 
         for house in resp["households"]:
@@ -738,11 +754,8 @@ class YandexQuasar(Dispatcher):
             json={"device_ids": [device["quasar_info"]["device_id"]]},
             headers=ALARM_HEADERS
         )
-        resp = await self._safe_read_json(r, timeout=20, context="get_alarms")
-        if not resp:
-            _LOGGER.error("Failed to fetch alarms (empty or invalid response)")
-            return []
-        return resp.get("alarms", [])
+        resp = await r.json()
+        return resp["alarms"]
 
     async def create_alarm(self, device: dict, alarm: dict) -> bool:
         alarm["device_id"] = device["quasar_info"]["device_id"]
