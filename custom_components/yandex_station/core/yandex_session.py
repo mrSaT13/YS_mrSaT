@@ -564,6 +564,15 @@ class YandexSession(BasicSession):
     async def get(self, url: str, **kwargs):
         if url.startswith(("https://quasar.yandex.net/glagol/", "https://api.music.yandex.net/")):
             return await self.request_glagol(url, **kwargs)
+        # Для запросов к IoT Quasar добавляем Authorization заголовок с x-token
+        if url.startswith("https://iot.quasar.yandex.ru"):
+            if not self.x_token:
+                _LOGGER.error("x_token required for IoT Quasar request")
+                raise Exception("x_token required for IoT Quasar request")
+            headers = kwargs.setdefault("headers", {})
+            headers["Authorization"] = f"OAuth {self.x_token}"
+            # Добавляем User-Agent для IoT запросов
+            headers.setdefault("User-Agent", DEFAULT_MOBILE_UA or "YaBrowser/24.1.0.0 Safari/537.36")
         return await self.request("get", url, **kwargs)
 
     async def post(self, url, **kwargs):
@@ -596,22 +605,28 @@ class YandexSession(BasicSession):
                 self.csrf_token = m[1]
             kwargs["headers"] = {"x-csrf-token": self.csrf_token}
 
-        async with self._request(method, url, **kwargs) as r:
-            if r.status == 200:
-                return r
-            elif r.status == 400:
-                retry = 0
-            elif r.status == 401:
-                await self.refresh_cookies()
-            elif r.status == 403:
-                self.csrf_token = None
-            elif not url.endswith("/get_alarms"):
-                _LOGGER.warning(f"{url} return {r.status} status")
+        try:
+            async with self._request(method, url, **kwargs) as r:
+                if r.status == 200:
+                    return r
+                elif r.status == 400:
+                    retry = 0
+                elif r.status == 401:
+                    await self.refresh_cookies()
+                elif r.status == 403:
+                    self.csrf_token = None
+                elif not url.endswith("/get_alarms"):
+                    _LOGGER.warning(f"{url} return {r.status} status")
 
-            if retry:
-                _LOGGER.debug(f"Retry {method} {url}")
-                return await self.request(method, url, retry - 1, **kwargs)
-            raise Exception(f"{url} return {r.status} status")
+                if retry:
+                    _LOGGER.debug(f"Retry {method} {url}")
+                    return await self.request(method, url, retry - 1, **kwargs)
+                raise Exception(f"{url} return {r.status} status")
+        except Exception as e:
+            import aiohttp
+            if isinstance(e, aiohttp.ClientConnectionError):
+                _LOGGER.error(f"Connection error for {method} {url}: {e} (proxy={self.proxy}, ssl={self.ssl})", exc_info=True)
+            raise
 
     async def request_glagol(self, url: str, retry: int = 2, **kwargs):
         if not self.music_token:
