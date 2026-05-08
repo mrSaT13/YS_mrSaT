@@ -468,9 +468,10 @@ class YandexSession(BasicSession):
                 headers.setdefault("Accept", "application/json")
                 headers.setdefault("Accept-Encoding", "gzip, deflate")
                 headers.setdefault("Connection", "keep-alive")
-                _LOGGER.debug(f"IoT Quasar request headers set for {url}")
+                _LOGGER.info(f"🔑 IoT Quasar request prepared")
+                _LOGGER.debug(f"Headers: Authorization=***{self.x_token[-10:]}, User-Agent={headers.get('User-Agent')[:50]}")
             else:
-                _LOGGER.error(f"x_token is empty for IoT Quasar request to {url}!")
+                _LOGGER.error(f"❌ x_token is empty for IoT Quasar request to {url}!")
                 raise Exception("x_token required for IoT Quasar request")
         elif "quasar.yandex" in url or "alice.yandex" in url:
             if self.x_token:
@@ -478,11 +479,14 @@ class YandexSession(BasicSession):
                 _LOGGER.debug(f"Added Authorization header for {url}")
 
         try:
-            _LOGGER.debug(f"Requesting {method.upper()} {url} with headers: {dict(headers)}")
+            _LOGGER.debug(f"→ {method.upper()} {url}")
             async with self._request(method, url, **kwargs) as r:
+                _LOGGER.info(f"← {method.upper()} {url} → {r.status}")
+                
                 if r.status == 200:
                     return r
                 elif r.status == 401:
+                    _LOGGER.warning(f"401 Unauthorized for {url}")
                     if self.x_token:
                         _LOGGER.debug("Got 401, refreshing cookies...")
                         await self.refresh_cookies()
@@ -496,10 +500,16 @@ class YandexSession(BasicSession):
                     return await self.request(method, url, retry - 1, **kwargs)
                     
                 raise Exception(f"{url} returned {r.status}")
+        except asyncio.TimeoutError as e:
+            _LOGGER.error(f"⏱️ Timeout for {method.upper()} {url}: {e}")
+            if retry > 0:
+                await asyncio.sleep(1)
+                return await self.request(method, url, retry - 1, **kwargs)
+            raise
         except Exception as e:
-            _LOGGER.error(f"Request error for {method.upper()} {url}: {type(e).__name__}: {e}", exc_info=True)
+            _LOGGER.error(f"❌ Request error for {method.upper()} {url}: {type(e).__name__}: {e}")
             if retry > 0 and "Connection" in str(type(e).__name__):
-                _LOGGER.debug(f"Connection error, retrying {url}: {e}")
+                _LOGGER.debug(f"Connection error, retrying {url}")
                 await asyncio.sleep(1)
                 return await self.request(method, url, retry - 1, **kwargs)
             raise

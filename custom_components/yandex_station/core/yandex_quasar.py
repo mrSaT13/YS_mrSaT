@@ -4,6 +4,7 @@ import logging
 import ssl
 from datetime import datetime
 
+import aiohttp
 from aiohttp import WSMsgType
 
 from .quasar_info import has_quasar
@@ -205,53 +206,83 @@ class YandexQuasar(Dispatcher):
         self.ssl_context = ssl.create_default_context()
         self.ssl_context.check_hostname = False
         self.ssl_context.verify_mode = ssl.CERT_NONE
+        
+        # Явно указываем поддерживаемые версии TLS
+        try:
+            self.ssl_context.minimum_version = ssl.TLSVersion.TLSv1_2
+            _LOGGER.debug(f"SSL context configured: TLSv1.2+, verify_mode=CERT_NONE")
+        except AttributeError:
+            _LOGGER.debug(f"SSL TLS version attributes not available (older Python)")
+            
+        # Отключаем проверку сертификата ещё раз для надёжности
+        self.ssl_context.options |= ssl.OP_NO_COMPRESSION
 
     async def init(self):
         """Основная функция. Возвращает список колонок."""
-        _LOGGER.debug("Получение списка устройств...")
+        _LOGGER.info("=" * 70)
+        _LOGGER.info("🚀 QUASAR INITIALIZATION STARTED")
         _LOGGER.debug(f"x_token present: {bool(self.session.x_token)}")
+        _LOGGER.debug(f"x_token length: {len(self.session.x_token or '')}")
+        _LOGGER.debug(f"SSL verify: {self.ssl_context.check_hostname}, mode: {self.ssl_context.verify_mode}")
 
         try:
-            r = await self.session.get(
-                f"https://iot.quasar.yandex.ru/m/v3/user/devices", 
-                timeout=15,
-                ssl=self.ssl_context  # Используем наш SSL контекст
-            )
-            _LOGGER.debug(f"Response status: {r.status}")
-            _LOGGER.debug(f"Response headers: {dict(r.headers)}")
-            _LOGGER.debug(f"Response content-type: {r.content_type}")
+            _LOGGER.info("📡 Sending request to iot.quasar.yandex.ru...")
             
-            # Логируем первые 100 байт тела ответа
-            try:
-                resp = await r.json()
-            except Exception as json_err:
-                # Если ошибка при парсинге JSON, логируем текст ответа
+            r = await self.session.get(
+                "https://iot.quasar.yandex.ru/m/v3/user/devices", 
+                timeout=aiohttp.ClientTimeout(total=30, sock_connect=10, sock_read=10),
+                ssl=self.ssl_context
+            )
+            
+            _LOGGER.info(f"✅ Response received: HTTP {r.status}")
+            _LOGGER.debug(f"Content-Type: {r.content_type}, Length: {r.content_length}")
+            
+            if r.status != 200:
                 try:
-                    text = await r.text()
-                    _LOGGER.error(f"Failed to parse JSON response: {json_err}. Response text: {text[:500]}")
+                    error_text = await asyncio.wait_for(r.text(), timeout=5)
+                    _LOGGER.error(f"HTTP {r.status} error: {error_text[:300]}")
                 except:
-                    _LOGGER.error(f"Failed to parse JSON and read response text: {json_err}")
+                    _LOGGER.error(f"HTTP {r.status} (could not read error body)")
+                raise Exception(f"IoT Quasar returned {r.status}")
+            
+            _LOGGER.info("📖 Parsing JSON response...")
+            try:
+                resp = await asyncio.wait_for(r.json(), timeout=10)
+                status = resp.get('status', 'unknown')
+                _LOGGER.info(f"✅ JSON parsed. API status: '{status}'")
+            except asyncio.TimeoutError:
+                _LOGGER.error("⏱️ TIMEOUT reading JSON (>10s)")
+                raise Exception("Timeout reading response")
+            except Exception as e:
+                _LOGGER.error(f"❌ JSON error: {type(e).__name__}: {e}")
                 raise
             
-            _LOGGER.debug(f"Response: {resp.get('status', 'unknown')}")
-            assert resp["status"] == "ok", resp
+            if resp.get("status") != "ok":
+                _LOGGER.error(f"API returned status '{status}' instead of 'ok'")
+                raise Exception(f"Invalid API status: {status}")
 
             self.devices = []
+            household_count = len(resp.get("households", []))
+            _LOGGER.info(f"📦 Processing {household_count} households...")
 
             for house in resp["households"]:
+                device_list = house.get("all", [])
+                _LOGGER.debug(f"  {house.get('name')}: {len(device_list)} devices")
                 self.devices.extend(
-                    {**device, "house_name": house["name"]} for device in house["all"]
+                    {**device, "house_name": house["name"]} for device in device_list
                 )
             
-            _LOGGER.info(f"Загружено устройств: {len(self.devices)}")
+            _LOGGER.info(f"✅ Total devices loaded: {len(self.devices)}")
 
             await self.load_scenarios()
             await self.load_speakers()
             
-            _LOGGER.info(f"Инициализация завершена. Колонок: {len(self.speakers)}")
+            _LOGGER.info(f"🎉 Initialization complete: {len(self.speakers)} speakers")
+            _LOGGER.info("=" * 70)
             
         except Exception as e:
-            _LOGGER.error(f"Failed to init Quasar: {e}", exc_info=True)
+            _LOGGER.error(f"❌ INITIALIZATION FAILED: {type(e).__name__}: {e}", exc_info=True)
+            _LOGGER.info("=" * 70)
             raise
 
     @property
