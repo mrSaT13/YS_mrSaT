@@ -30,11 +30,13 @@ from aiohttp import ClientSession
 try:
     from ya_passport_auth import PassportClient, ClientConfig, Credentials
     from ya_passport_auth.exceptions import QRTimeoutError, QRPendingError, YaPassportError
+    from ya_passport_auth.config import DEFAULT_MOBILE_UA
     YA_PASSPORT_AVAILABLE = True
     _LOGGER_TEMP = logging.getLogger(__name__)
     _LOGGER_TEMP.debug("ya-passport-auth library imported successfully")
 except ImportError as e:
     YA_PASSPORT_AVAILABLE = False
+    DEFAULT_MOBILE_UA = None
     _LOGGER_TEMP = logging.getLogger(__name__)
     _LOGGER_TEMP.warning(f"ya-passport-auth library not available: {e}")
 
@@ -241,8 +243,10 @@ class YandexSession(BasicSession):
             _LOGGER.debug(f"Session state: closed={self._session.closed}, cookies={len(self._session.cookie_jar)}")
             _LOGGER.debug("Initializing PassportClient with existing session")
             
+            # Устанавливаем реалистичный User-Agent для QR сессии
+            config = ClientConfig(user_agent=DEFAULT_MOBILE_UA)
+            
             # Инициализируем с существующей сессией
-            config = ClientConfig()
             self._passport_client = PassportClient(session=self._session, config=config)
             
             # Начинаем QR логин
@@ -340,13 +344,13 @@ class YandexSession(BasicSession):
                 total_timeout=60.0,  # таймаут 60 сек
             )
             
-            _LOGGER.info(f"QR login completed successfully")
-            _LOGGER.debug(f"Credentials: x_token={credentials.x_token}, music_token={credentials.music_token}")
+            _LOGGER.info(f"QR login completed successfully, uid={credentials.uid}, login={credentials.display_login}")
             
-            self.x_token = str(credentials.x_token)
-            self.music_token = str(credentials.music_token) if credentials.music_token else None
+            # Используем get_secret() для извлечения реальных значений из SecretStr
+            self.x_token = credentials.x_token.get_secret()
+            self.music_token = credentials.music_token.get_secret() if credentials.music_token else None
             
-            _LOGGER.debug(f"Validating x_token")
+            _LOGGER.debug(f"Validating x_token (len={len(self.x_token)}))")
             return await self.validate_token(self.x_token)
             
         except QRTimeoutError as e:
@@ -470,10 +474,11 @@ class YandexSession(BasicSession):
                 headers={"Ya-Client-Host": host, "Ya-Client-Cookie": cookies},
             )
             if "access_token" not in resp:
-                _LOGGER.error(f"No access_token in response: {resp}")
+                error_msg = resp.get("error", resp.get("errors", resp))
+                _LOGGER.error(f"No access_token in token exchange response. Error: {error_msg}")
                 return LoginResponse(resp)
             x_token = resp["access_token"]
-            _LOGGER.debug(f"Got x_token from cookies")
+            _LOGGER.info(f"Successfully exchanged cookies for x_token")
             return await self.validate_token(x_token)
         except Exception as e:
             _LOGGER.error(f"Cookie exchange failed: {type(e).__name__}: {e}", exc_info=True)
@@ -634,6 +639,37 @@ class YandexSession(BasicSession):
     def cookie(self):
         raw = pickle.dumps(getattr(self._session.cookie_jar, "_cookies"), pickle.HIGHEST_PROTOCOL)
         return base64.b64encode(raw).decode()
+
+    def get_cookies_json(self) -> str:
+        """Получить куки в формате JSON списка (совместимо с браузерными расширениями).
+        
+        Возвращает JSON с массивом объектов куки, где каждый объект содержит:
+        - name, value, domain, path, secure, httpOnly, expirationDate
+        
+        Пример использования:
+        cookies_json = session.get_cookies_json()
+        # Можно вставить в импорт куки через браузер или скрипт
+        """
+        cookie_list = []
+        for cookie in self._session.cookie_jar:
+            # Фильтруем только домены яндекса для безопасности
+            if "yandex.ru" in cookie.domain or "yandex.net" in cookie.domain:
+                try:
+                    cookie_dict = {
+                        "name": cookie.key,
+                        "value": cookie.value,
+                        "domain": cookie.domain,
+                        "path": cookie.path or "/",
+                        "secure": bool(cookie.secure),
+                        "httpOnly": bool(cookie.get("httponly", False)),
+                        "expirationDate": int(cookie.expires) if cookie.expires else None
+                    }
+                    cookie_list.append(cookie_dict)
+                except Exception as e:
+                    _LOGGER.warning(f"Failed to process cookie {cookie.key}: {e}")
+        
+        _LOGGER.info(f"Exported {len(cookie_list)} cookies to JSON format")
+        return json.dumps(cookie_list, ensure_ascii=False, indent=2)
 
     async def _handle_update(self):
         for coro in self._update_listeners:
