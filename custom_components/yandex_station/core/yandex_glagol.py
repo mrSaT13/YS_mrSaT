@@ -118,6 +118,8 @@ class YandexGlagol:
                     pass
                 _LOGGER.warning(f"[{self.name}] Glagol token returned 403; returning None and respecting cooldown")
                 return None
+        except Exception:
+            pass
 
         # @dext0r: fix bug with wrong content-type — читаем текст и парсим вручную
         resp_text = await r.text()
