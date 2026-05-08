@@ -71,21 +71,34 @@ class BasicSession:
     domain: str = None
     proxy: str = None
     ssl_context: ssl.SSLContext = None
+    _ssl_context_created: bool = False
 
     def __init__(self):
+        # SSL контекст создаётся лениво при первом использовании
+        # Это избегает блокировки event loop при инициализации
+        pass
+    
+    def _get_ssl_context(self) -> ssl.SSLContext:
+        """Ленивая инициализация SSL контекста - избегает блокировки event loop."""
+        if self._ssl_context_created:
+            return self.ssl_context
+        
         # Создаем контекст SSL без проверки - решает проблему Connection closed
         self.ssl_context = ssl.create_default_context()
         self.ssl_context.check_hostname = False
         self.ssl_context.verify_mode = ssl.CERT_NONE
+        self._ssl_context_created = True
+        _LOGGER.debug("SSL context created (lazy init)")
+        return self.ssl_context
 
     def _request(self, method: str, url: str, **kwargs):
         """Internal request function with proxy and ssl support."""
         if self.domain:
             url = url.replace("yandex.ru", self.domain)
         
-        # Если ssl не передан явно, используем наш контекст
+        # Если ssl не передан явно, используем наш контекст (ленивая инициализация)
         if "ssl" not in kwargs:
-            kwargs["ssl"] = self.ssl_context
+            kwargs["ssl"] = self._get_ssl_context()
             
         kwargs["proxy"] = self.proxy
         kwargs.setdefault("timeout", 15.0)

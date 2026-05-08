@@ -195,14 +195,22 @@ class YandexQuasar(Dispatcher):
     
     # SSL контекст для обхода проблем с соединением
     ssl_context: ssl.SSLContext = None
+    _ssl_context_created: bool = False
 
     def __init__(self, session: YandexSession):
         super().__init__()
         self.session = session
         self.online_updated = asyncio.Event()
         self.online_updated.set()
+        # SSL контекст создаётся лениво при первом использовании
+        _LOGGER.debug("YandexQuasar initialized (SSL context will be created on first use)")
+    
+    def _get_ssl_context(self) -> ssl.SSLContext:
+        """Ленивая инициализация SSL контекста для IoT Quasar."""
+        if self._ssl_context_created:
+            return self.ssl_context
         
-        # Создаем SSL контекст без проверки
+        # Создаем SSL контекст без проверки сертификата
         self.ssl_context = ssl.create_default_context()
         self.ssl_context.check_hostname = False
         self.ssl_context.verify_mode = ssl.CERT_NONE
@@ -210,12 +218,14 @@ class YandexQuasar(Dispatcher):
         # Явно указываем поддерживаемые версии TLS
         try:
             self.ssl_context.minimum_version = ssl.TLSVersion.TLSv1_2
-            _LOGGER.debug(f"SSL context configured: TLSv1.2+, verify_mode=CERT_NONE")
+            _LOGGER.debug(f"SSL context created: TLSv1.2+, verify_mode=CERT_NONE")
         except AttributeError:
             _LOGGER.debug(f"SSL TLS version attributes not available (older Python)")
             
-        # Отключаем проверку сертификата ещё раз для надёжности
+        # Отключаем проверку сертификата и сжатие
         self.ssl_context.options |= ssl.OP_NO_COMPRESSION
+        self._ssl_context_created = True
+        return self.ssl_context
 
     async def init(self):
         """Основная функция. Возвращает список колонок."""
@@ -223,7 +233,7 @@ class YandexQuasar(Dispatcher):
         _LOGGER.info("🚀 QUASAR INITIALIZATION STARTED")
         _LOGGER.debug(f"x_token present: {bool(self.session.x_token)}")
         _LOGGER.debug(f"x_token length: {len(self.session.x_token or '')}")
-        _LOGGER.debug(f"SSL verify: {self.ssl_context.check_hostname}, mode: {self.ssl_context.verify_mode}")
+        _LOGGER.debug(f"SSL verify: {self._get_ssl_context().check_hostname}, mode: {self._get_ssl_context().verify_mode}")
 
         try:
             _LOGGER.info("📡 Sending request to iot.quasar.yandex.ru...")
@@ -232,7 +242,7 @@ class YandexQuasar(Dispatcher):
             r = await self.session.get(
                 "https://iot.quasar.yandex.ru/m/v3/user/devices", 
                 timeout=aiohttp.ClientTimeout(total=30, sock_connect=10, sock_read=20),
-                ssl=self.ssl_context
+                ssl=self._get_ssl_context()
             )
             
             _LOGGER.info(f"✅ Response received: HTTP {r.status}")
@@ -331,7 +341,7 @@ class YandexQuasar(Dispatcher):
         """Загружаем device_id и platform для колонок."""
         r = await self.session.get(
             f"https://iot.quasar.yandex.ru/m/user/devices/{device['id']}/configuration",
-            ssl=self.ssl_context
+            ssl=self._get_ssl_context()
         )
         resp = await r.json()
         assert resp["status"] == "ok", resp
@@ -341,7 +351,7 @@ class YandexQuasar(Dispatcher):
         """Получает список сценариев."""
         r = await self.session.get(
             f"https://iot.quasar.yandex.ru/m/user/scenarios",
-            ssl=self.ssl_context
+            ssl=self._get_ssl_context()
         )
         resp = await r.json()
         assert resp["status"] == "ok", resp
@@ -358,7 +368,7 @@ class YandexQuasar(Dispatcher):
 
         r = await self.session.get(
             f"https://iot.quasar.yandex.ru/m/v4/user/scenarios/{sid}/edit",
-            ssl=self.ssl_context
+            ssl=self._get_ssl_context()
         )
         resp = await r.json()
         assert resp["status"] == "ok"
@@ -367,7 +377,7 @@ class YandexQuasar(Dispatcher):
         r = await self.session.put(
             f"https://iot.quasar.yandex.ru/m/v3/user/scenarios/{sid}", 
             json=payload,
-            ssl=self.ssl_context
+            ssl=self._get_ssl_context()
         )
         resp = await r.json()
         assert resp["status"] == "ok", resp
@@ -378,7 +388,7 @@ class YandexQuasar(Dispatcher):
         r = await self.session.post(
             f"https://iot.quasar.yandex.ru/m/v4/user/scenarios", 
             json=payload,
-            ssl=self.ssl_context
+            ssl=self._get_ssl_context()
         )
         resp = await r.json()
         assert resp["status"] == "ok", resp
@@ -404,7 +414,7 @@ class YandexQuasar(Dispatcher):
         r = await self.session.put(
             f"https://iot.quasar.yandex.ru/m/v4/user/scenarios/{sid}", 
             json=payload,
-            ssl=self.ssl_context
+            ssl=self._get_ssl_context()
         )
         resp = await r.json()
         assert resp["status"] == "ok", resp
