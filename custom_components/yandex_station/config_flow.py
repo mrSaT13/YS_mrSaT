@@ -27,6 +27,8 @@ _LOGGER = logging.getLogger(__name__)
 
 # noinspection PyUnusedLocal
 class YandexStationFlowHandler(ConfigFlow, domain=DOMAIN):
+    VERSION = 1
+
     @property
     @lru_cache()
     def yandex(self):
@@ -235,7 +237,7 @@ class OptionsFlowHandler(OptionsFlow):
         # sort by names
         devices = dict(sorted(devices.items(), key=lambda x: x[1]))
 
-        defaults = dict(self.config_entry.options)
+        defaults = dict(self._config_entry.options)
         if include := defaults.get("include"):
             # filter only existing devices
             defaults["include"] = [i for i in include if i in devices]
