@@ -362,12 +362,44 @@ class YandexQuasar(Dispatcher):
 
     async def load_scenarios(self):
         """Получает список сценариев."""
-        r = await self.session.get(
-            f"https://iot.quasar.yandex.ru/m/user/scenarios"
-        )
-        resp = await r.json()
-        assert resp["status"] == "ok", resp
+        # Делает минималистичный запрос и читает сырые байты, затем парсит JSON
+        headers = {
+            "Accept": "application/json, text/plain, */*",
+            "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
+            "Accept-Encoding": "identity",
+            "Connection": "close",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        }
+        if self.session.x_token:
+            headers["Authorization"] = f"OAuth {self.session.x_token}"
 
+        async with self.session._session.get(
+            f"https://iot.quasar.yandex.ru/m/user/scenarios",
+            headers=headers,
+            timeout=aiohttp.ClientTimeout(total=30, sock_connect=10, sock_read=20),
+            ssl=self._get_ssl_context(),
+            auto_decompress=False,
+        ) as r:
+            _LOGGER.info(f"← GET /m/user/scenarios -> {r.status}")
+            if r.status != 200:
+                text = await r.text()
+                raise Exception(f"Scenarios fetch failed: {r.status} {text[:200]}")
+
+            try:
+                raw = await asyncio.wait_for(r.read(), timeout=20)
+            except asyncio.TimeoutError:
+                raise Exception("Timeout reading scenarios body")
+            except Exception as e:
+                raise
+
+            body = raw.decode("utf-8", errors="replace")
+            try:
+                resp = json.loads(body)
+            except json.JSONDecodeError as e:
+                _LOGGER.error(f"Failed to decode scenarios JSON: {e}; body start: {body[:300]}")
+                raise
+
+        assert resp.get("status") == "ok", resp
         self.scenarios = resp["scenarios"]
         _LOGGER.debug(f"Загружено сценариев: {len(self.scenarios)}")
 
