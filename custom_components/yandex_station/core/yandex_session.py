@@ -475,19 +475,23 @@ class YandexSession(BasicSession):
         
         # Если это запрос к Quasar/IoT, добавляем токен и МИНИМАЛЬНЫЕ заголовки
         if "iot.quasar" in url or "quasar.yandex" in url:
-            if self.x_token:
-                headers["Authorization"] = f"OAuth {self.x_token}"
-                # Минимальные заголовки - избегаем фингерпринтинга
-                headers.setdefault("Accept", "application/json, text/plain, */*")
-                headers.setdefault("Accept-Language", "ru-RU,ru;q=0.9,en;q=0.8")
-                headers.setdefault("Accept-Encoding", "identity")  # Отключаем сжатие!
-                headers.setdefault("Connection", "close")  # Закрываем соединение
-                # Отключаем автоматическую декомпрессию
-                kwargs["auto_decompress"] = False
-                _LOGGER.debug(f"Quasar request with minimal headers to {url}")
-            else:
-                _LOGGER.error(f"❌ x_token is empty for Quasar request to {url}!")
-                raise Exception("x_token required for Quasar request")
+            # Если вызывающий код уже передал Authorization (например, с music_token),
+            # НЕ перезаписываем его. В противном случае используем x_token.
+            if "Authorization" not in headers:
+                if self.x_token:
+                    headers["Authorization"] = f"OAuth {self.x_token}"
+                else:
+                    _LOGGER.error(f"❌ x_token is empty for Quasar request to {url}!")
+                    raise Exception("x_token required for Quasar request")
+
+            # Минимальные заголовки - избегаем фингерпринтинга
+            headers.setdefault("Accept", "application/json, text/plain, */*")
+            headers.setdefault("Accept-Language", "ru-RU,ru;q=0.9,en;q=0.8")
+            headers.setdefault("Accept-Encoding", "identity")  # Отключаем сжатие!
+            headers.setdefault("Connection", "close")  # Закрываем соединение
+            # Отключаем автоматическую декомпрессию
+            kwargs["auto_decompress"] = False
+            _LOGGER.debug(f"Quasar request with minimal headers to {url}")
         elif "alice.yandex" in url:
             if self.x_token:
                 headers["Authorization"] = f"OAuth {self.x_token}"
