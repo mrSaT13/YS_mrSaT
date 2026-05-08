@@ -228,14 +228,21 @@ class YandexQuasar(Dispatcher):
         try:
             _LOGGER.info("📡 Sending request to iot.quasar.yandex.ru...")
             
+            # Increased socket read timeout to 20s for body read
             r = await self.session.get(
                 "https://iot.quasar.yandex.ru/m/v3/user/devices", 
-                timeout=aiohttp.ClientTimeout(total=30, sock_connect=10, sock_read=10),
+                timeout=aiohttp.ClientTimeout(total=30, sock_connect=10, sock_read=20),
                 ssl=self.ssl_context
             )
             
             _LOGGER.info(f"✅ Response received: HTTP {r.status}")
             _LOGGER.debug(f"Content-Type: {r.content_type}, Length: {r.content_length}")
+            
+            # Log all response headers to debug connection issues
+            _LOGGER.debug(f"Transfer-Encoding: {r.headers.get('Transfer-Encoding', 'N/A')}")
+            _LOGGER.debug(f"Connection: {r.headers.get('Connection', 'N/A')}")
+            _LOGGER.debug(f"Content-Encoding: {r.headers.get('Content-Encoding', 'N/A')}")
+            _LOGGER.debug(f"All headers: {dict(r.headers)}")
             
             if r.status != 200:
                 try:
@@ -245,16 +252,25 @@ class YandexQuasar(Dispatcher):
                     _LOGGER.error(f"HTTP {r.status} (could not read error body)")
                 raise Exception(f"IoT Quasar returned {r.status}")
             
-            _LOGGER.info("📖 Parsing JSON response...")
+            _LOGGER.info("📖 Reading response body...")
             try:
-                resp = await asyncio.wait_for(r.json(), timeout=10)
+                # First try to read raw text with extended timeout
+                body_text = await asyncio.wait_for(r.text(), timeout=20)
+                _LOGGER.debug(f"📄 Body received: {len(body_text)} chars, first 200: {body_text[:200]}")
+                
+                _LOGGER.info("📖 Parsing JSON from body...")
+                resp = json.loads(body_text)
                 status = resp.get('status', 'unknown')
                 _LOGGER.info(f"✅ JSON parsed. API status: '{status}'")
             except asyncio.TimeoutError:
-                _LOGGER.error("⏱️ TIMEOUT reading JSON (>10s)")
-                raise Exception("Timeout reading response")
+                _LOGGER.error("⏱️ TIMEOUT reading response body (>20s)")
+                raise Exception("Timeout reading response body")
+            except json.JSONDecodeError as je:
+                _LOGGER.error(f"❌ JSON decode error at line {je.lineno}, col {je.colno}: {je.msg}")
+                _LOGGER.error(f"Body start: {body_text[:500] if 'body_text' in locals() else 'N/A'}")
+                raise
             except Exception as e:
-                _LOGGER.error(f"❌ JSON error: {type(e).__name__}: {e}")
+                _LOGGER.error(f"❌ Body read error: {type(e).__name__}: {e}")
                 raise
             
             if resp.get("status") != "ok":
