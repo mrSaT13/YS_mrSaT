@@ -353,9 +353,12 @@ class YandexQuasar(Dispatcher):
         r = await self.session.get(
             f"https://iot.quasar.yandex.ru/m/user/devices/{device['id']}/configuration"
         )
-        resp = await r.json()
-        assert resp["status"] == "ok", resp
-        device.update(resp["quasar_info"])
+        try:
+            resp = await r.json()
+            assert resp["status"] == "ok", resp
+            device.update(resp["quasar_info"])
+        finally:
+            r.close()
 
     async def load_scenarios(self):
         """Получает список сценариев."""
@@ -406,16 +409,23 @@ class YandexQuasar(Dispatcher):
         r = await self.session.get(
             f"https://iot.quasar.yandex.ru/m/v4/user/scenarios/{sid}/edit"
         )
-        resp = await r.json()
-        assert resp["status"] == "ok"
+        try:
+            resp = await r.json()
+            assert resp["status"] == "ok"
 
-        payload = parse_scenario(resp["scenario"])
+            payload = parse_scenario(resp["scenario"])
+        finally:
+            r.close()
+
         r = await self.session.put(
             f"https://iot.quasar.yandex.ru/m/v3/user/scenarios/{sid}", 
             json=payload
         )
-        resp = await r.json()
-        assert resp["status"] == "ok", resp
+        try:
+            resp = await r.json()
+            assert resp["status"] == "ok", resp
+        finally:
+            r.close()
 
     async def add_scenario(self, device_id: str, hash: str) -> str:
         """Добавляет сценарий-пустышку."""
@@ -424,9 +434,12 @@ class YandexQuasar(Dispatcher):
             f"https://iot.quasar.yandex.ru/m/v4/user/scenarios", 
             json=payload
         )
-        resp = await r.json()
-        assert resp["status"] == "ok", resp
-        return resp["scenario_id"]
+        try:
+            resp = await r.json()
+            assert resp["status"] == "ok", resp
+            return resp["scenario_id"]
+        finally:
+            r.close()
 
     async def send(self, device: dict, text: str, is_tts: bool = False):
         """Запускает сценарий на выполнение команды или TTS."""
@@ -449,14 +462,20 @@ class YandexQuasar(Dispatcher):
             f"https://iot.quasar.yandex.ru/m/v4/user/scenarios/{sid}", 
             json=payload
         )
-        resp = await r.json()
-        assert resp["status"] == "ok", resp
+        try:
+            resp = await r.json()
+            assert resp["status"] == "ok", resp
+        finally:
+            r.close()
 
         r = await self.session.post(
             f"https://iot.quasar.yandex.ru/m/user/scenarios/{sid}/actions"
         )
-        resp = await r.json()
-        assert resp["status"] == "ok", resp
+        try:
+            resp = await r.json()
+            assert resp["status"] == "ok", resp
+        finally:
+            r.close()
 
     async def load_local_speakers(self):
         """Загружает список локальных колонок."""
@@ -464,11 +483,14 @@ class YandexQuasar(Dispatcher):
             r = await self.session.get(
                 "https://quasar.yandex.net/glagol/device_list"
             )
-            resp = await r.json()
-            return [
-                {"device_id": d["id"], "name": d["name"], "platform": d["platform"]}
-                for d in resp["devices"]
-            ]
+            try:
+                resp = await r.json()
+                return [
+                    {"device_id": d["id"], "name": d["name"], "platform": d["platform"]}
+                    for d in resp["devices"]
+                ]
+            finally:
+                r.close()
 
         except:
             _LOGGER.exception("Load local speakers")
@@ -482,6 +504,7 @@ class YandexQuasar(Dispatcher):
         try:
             raw = await asyncio.wait_for(r.read(), timeout=20)
             resp = json.loads(raw.decode('utf-8', errors='replace'))
+            assert resp["status"] == "ok", resp
         except asyncio.TimeoutError:
             raise Exception(f"Timeout reading device config for {did}")
         except Exception as e:
@@ -489,7 +512,6 @@ class YandexQuasar(Dispatcher):
             raise
         finally:
             r.close()
-        assert resp["status"] == "ok", resp
         return resp["quasar_config"], resp["quasar_config_version"]
 
     async def set_device_config(self, device: dict, config: dict, version: str):
@@ -500,16 +522,22 @@ class YandexQuasar(Dispatcher):
             f"https://iot.quasar.yandex.ru/m/v3/user/devices/{did}/configuration/quasar",
             json={"config": config, "version": version}
         )
-        resp = await r.json()
-        assert resp["status"] == "ok", resp
+        try:
+            resp = await r.json()
+            assert resp["status"] == "ok", resp
+        finally:
+            r.close()
 
     async def get_device(self, device: dict):
         r = await self.session.get(
             f"https://iot.quasar.yandex.ru/m/user/{device['item_type']}s/{device['id']}"
         )
-        resp = await r.json()
-        assert resp["status"] == "ok", resp
-        return resp
+        try:
+            resp = await r.json()
+            assert resp["status"] == "ok", resp
+            return resp
+        finally:
+            r.close()
 
     async def device_action(self, device: dict, instance: str, value, relative=False):
         action = {
@@ -524,8 +552,11 @@ class YandexQuasar(Dispatcher):
             f"https://iot.quasar.yandex.ru/m/user/{device['item_type']}s/{device['id']}/actions",
             json={"actions": [action]}
         )
-        resp = await r.json()
-        assert resp["status"] == "ok", resp
+        try:
+            resp = await r.json()
+            assert resp["status"] == "ok", resp
+        finally:
+            r.close()
 
         await asyncio.sleep(1)
 
@@ -542,10 +573,12 @@ class YandexQuasar(Dispatcher):
 
         url = f"https://iot.quasar.yandex.ru/m/user/{device['item_type']}s/{device['id']}/actions"
         r = await self.session.post(url, json={"actions": [action]})
-        resp = await r.json()
-        assert resp["status"] == "ok", resp
-
-        return resp["devices"]
+        try:
+            resp = await r.json()
+            assert resp["status"] == "ok", resp
+            return resp["devices"]
+        finally:
+            r.close()
 
     async def device_actions(self, device: dict, **kwargs):
         _LOGGER.debug(f"Device action: {kwargs}")
@@ -566,8 +599,11 @@ class YandexQuasar(Dispatcher):
             f"https://iot.quasar.yandex.ru/m/user/{device['item_type']}s/{device['id']}/actions",
             json={"actions": actions}
         )
-        resp = await r.json()
-        assert resp["status"] == "ok", resp
+        try:
+            resp = await r.json()
+            assert resp["status"] == "ok", resp
+        finally:
+            r.close()
 
         device = await self.get_device(device)
         self.dispatch_update(device["id"], device)
@@ -579,8 +615,11 @@ class YandexQuasar(Dispatcher):
             f"https://iot.quasar.yandex.ru/m/v3/user/custom/group/color/apply",
             json={"device_ids": [device['id']], **kwargs}
         )
-        resp = await r.json()
-        assert resp["status"] == "ok", resp
+        try:
+            resp = await r.json()
+            assert resp["status"] == "ok", resp
+        finally:
+            r.close()
 
         device = await self.get_device(device)
         self.dispatch_update(device["id"], device)
@@ -599,6 +638,7 @@ class YandexQuasar(Dispatcher):
             try:
                 raw = await asyncio.wait_for(r.read(), timeout=20)
                 resp = json.loads(raw.decode('utf-8', errors='replace'))
+                assert resp["status"] == "ok", resp
             except asyncio.TimeoutError:
                 raise Exception("Timeout reading online stats")
             except Exception as e:
@@ -606,7 +646,6 @@ class YandexQuasar(Dispatcher):
                 raise
             finally:
                 r.close()
-            assert resp["status"] == "ok", resp
         except Exception:
             return
         finally:
@@ -629,6 +668,7 @@ class YandexQuasar(Dispatcher):
         try:
             raw = await asyncio.wait_for(r.read(), timeout=20)
             resp = json.loads(raw.decode('utf-8', errors='replace'))
+            assert resp["status"] == "ok", resp
         except asyncio.TimeoutError:
             raise Exception("Timeout reading devices for connect")
         except Exception as e:
@@ -636,7 +676,6 @@ class YandexQuasar(Dispatcher):
             raise
         finally:
             r.close()
-        assert resp["status"] == "ok", resp
 
         for house in resp["households"]:
             if "sharing_info" in house:
@@ -668,14 +707,17 @@ class YandexQuasar(Dispatcher):
                 f"https://iot.quasar.yandex.ru/m/v3/user/devices", 
                 timeout=15
             )
-            resp = await r.json()
-            assert resp["status"] == "ok", resp
+            try:
+                resp = await r.json()
+                assert resp["status"] == "ok", resp
 
-            for house in resp["households"]:
-                if "sharing_info" in house:
-                    continue
-                for device in house["all"]:
-                    self.dispatch_update(device["id"], device)
+                for house in resp["households"]:
+                    if "sharing_info" in house:
+                        continue
+                    for device in house["all"]:
+                        self.dispatch_update(device["id"], device)
+            finally:
+                r.close()
         except Exception as e:
             _LOGGER.debug(f"Devices forceupdate problem: {repr(e)}")
 
@@ -684,7 +726,10 @@ class YandexQuasar(Dispatcher):
             r = await self.session.get(
                 "https://iot.quasar.yandex.ru/m/user/scenarios/history"
             )
-            raw = await r.json()
+            try:
+                raw = await r.json()
+            finally:
+                r.close()
 
             for scenario in raw["scenarios"]:
                 if scenario["trigger_type"] == "scenario.trigger.voice":
@@ -695,7 +740,10 @@ class YandexQuasar(Dispatcher):
             r = await self.session.get(
                 f"https://iot.quasar.yandex.ru/m/v4/user/scenarios/launches/{scenario['id']}"
             )
-            raw = await r.json()
+            try:
+                raw = await r.json()
+            finally:
+                r.close()
 
             for step in raw["launch"]["steps"]:
                 for item in step["parameters"]["items"]:
@@ -735,24 +783,29 @@ class YandexQuasar(Dispatcher):
                 f"https://iot.quasar.yandex.ru/m/user/settings",
                 json={kv["key"]: kv["values"][value]}
             )
-
         else:
             r = await self.session.get(
                 "https://quasar.yandex.ru/get_account_config"
             )
-            resp = await r.json()
-            assert resp["status"] == "ok", resp
-
-            payload: dict = resp["config"]
+            try:
+                resp = await r.json()
+                assert resp["status"] == "ok", resp
+                payload: dict = resp["config"]
+            finally:
+                r.close()
+            
             payload[kv["key"]] = kv["values"][value]
 
             r = await self.session.post(
                 "https://quasar.yandex.ru/set_account_config", 
                 json=payload
             )
-
-        resp = await r.json()
-        assert resp["status"] == "ok", resp
+        
+        try:
+            resp = await r.json()
+            assert resp["status"] == "ok", resp
+        finally:
+            r.close()
 
     async def get_alarms(self, device: dict):
         r = await self.session.post(
@@ -760,8 +813,11 @@ class YandexQuasar(Dispatcher):
             json={"device_ids": [device["quasar_info"]["device_id"]]},
             headers=ALARM_HEADERS
         )
-        resp = await r.json()
-        return resp["alarms"]
+        try:
+            resp = await r.json()
+            return resp["alarms"]
+        finally:
+            r.close()
 
     async def create_alarm(self, device: dict, alarm: dict) -> bool:
         alarm["device_id"] = device["quasar_info"]["device_id"]
