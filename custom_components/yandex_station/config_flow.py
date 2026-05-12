@@ -26,6 +26,10 @@ _LOGGER = logging.getLogger(__name__)
 
 
 # noinspection PyUnusedLocal
+class YandexStationConfigFlow(ConfigFlow, domain=DOMAIN):
+    """Config flow for Yandex Station."""
+    VERSION = 1
+
     def __init__(self):
         super().__init__()
         self.cur_step = None
