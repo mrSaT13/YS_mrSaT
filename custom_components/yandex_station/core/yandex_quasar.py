@@ -11,6 +11,18 @@ from .yandex_session import YandexSession
 
 _LOGGER = logging.getLogger(__name__)
 
+
+async def _safe_response_json(r):
+    """Parse response as JSON, fallback to text if content-type is not JSON."""
+    try:
+        return await r.json()
+    except Exception:
+        try:
+            text = await r.text()
+            return json.loads(text)
+        except Exception:
+            return {"status": "error", "raw": (text[:1000] if 'text' in locals() else None)}
+
 IOT_TYPES = {
     "on": "devices.capabilities.on_off",
     "temperature": "devices.capabilities.range",
@@ -242,7 +254,7 @@ class YandexQuasar(Dispatcher):
             json={"devices": [{"id": device_id}]},
         )
         try:
-            resp = await r.json()
+            resp = await _safe_response_json(r)
             devices = resp.get("devices") or []
             if devices:
                 return devices[0]
@@ -257,7 +269,7 @@ class YandexQuasar(Dispatcher):
             json={"payload": {"devices": actions}},
         )
         try:
-            return await r.json()
+            return await _safe_response_json(r)
         finally:
             r.close()
 
@@ -268,7 +280,7 @@ class YandexQuasar(Dispatcher):
             timeout=aiohttp.ClientTimeout(total=30, sock_connect=10, sock_read=20),
         )
         try:
-            resp = await r.json()
+                resp = await _safe_response_json(r)
             devices = resp.get("devices")
             if not isinstance(devices, list):
                 raise Exception(f"Official list response without devices: {resp}")
@@ -309,7 +321,7 @@ class YandexQuasar(Dispatcher):
             timeout=aiohttp.ClientTimeout(total=30, sock_connect=10, sock_read=20),
         )
         try:
-            resp = await r.json()
+            resp = await _safe_response_json(r)
             devices = resp.get("devices")
             if not isinstance(devices, list):
                 raise Exception(f"Official query response without devices: {resp}")
@@ -429,12 +441,12 @@ class YandexQuasar(Dispatcher):
         r = await self.session.get(
             f"https://iot.quasar.yandex.ru/m/user/devices/{device['id']}/configuration"
         )
-        try:
-            resp = await r.json()
-            assert resp["status"] == "ok", resp
-            device.update(resp["quasar_info"])
-        finally:
-            r.close()
+            try:
+                resp = await _safe_response_json(r)
+                assert resp["status"] == "ok", resp
+                device.update(resp["quasar_info"])
+            finally:
+                r.close()
 
     async def load_scenarios(self):
         """Получает список сценариев."""
@@ -480,7 +492,7 @@ class YandexQuasar(Dispatcher):
             f"https://iot.quasar.yandex.ru/m/v4/user/scenarios/{sid}/edit"
         )
         try:
-            resp = await r.json()
+            resp = await _safe_response_json(r)
             assert resp["status"] == "ok"
 
             payload = parse_scenario(resp["scenario"])
@@ -492,7 +504,7 @@ class YandexQuasar(Dispatcher):
             json=payload
         )
         try:
-            resp = await r.json()
+            resp = await _safe_response_json(r)
             assert resp["status"] == "ok", resp
         finally:
             r.close()
@@ -505,7 +517,7 @@ class YandexQuasar(Dispatcher):
             json=payload
         )
         try:
-            resp = await r.json()
+            resp = await _safe_response_json(r)
             assert resp["status"] == "ok", resp
             return resp["scenario_id"]
         finally:
@@ -530,10 +542,10 @@ class YandexQuasar(Dispatcher):
 
         r = await self.session.put(
             f"https://iot.quasar.yandex.ru/m/v4/user/scenarios/{sid}", 
-            json=payload
+            json=payload,
         )
         try:
-            resp = await r.json()
+            resp = await _safe_response_json(r)
             assert resp["status"] == "ok", resp
         finally:
             r.close()
@@ -542,7 +554,7 @@ class YandexQuasar(Dispatcher):
             f"https://iot.quasar.yandex.ru/m/user/scenarios/{sid}/actions"
         )
         try:
-            resp = await r.json()
+            resp = await _safe_response_json(r)
             assert resp["status"] == "ok", resp
         finally:
             r.close()
@@ -554,10 +566,10 @@ class YandexQuasar(Dispatcher):
                 "https://quasar.yandex.net/glagol/device_list"
             )
             try:
-                resp = await r.json()
+                    resp = await _safe_response_json(r)
                 return [
                     {"device_id": d["id"], "name": d["name"], "platform": d["platform"]}
-                    for d in resp["devices"]
+                    for d in resp.get("devices", [])
                 ]
             finally:
                 r.close()
@@ -590,10 +602,10 @@ class YandexQuasar(Dispatcher):
         did = device["id"]
         r = await self.session.post(
             f"https://iot.quasar.yandex.ru/m/v3/user/devices/{did}/configuration/quasar",
-            json={"config": config, "version": version}
+            json={"config": config, "version": version},
         )
         try:
-            resp = await r.json()
+            resp = await _safe_response_json(r)
             assert resp["status"] == "ok", resp
         finally:
             r.close()
@@ -627,66 +639,35 @@ class YandexQuasar(Dispatcher):
 
         if relative:
             action["state"]["relative"] = True
-        # Сначала пробуем официальный API
+        # Prefer Legacy Quasar action endpoint (more reliable for many devices)
         try:
-            official_payload = [{"id": device["id"], "actions": [action]}]
-            official_resp = await self._official_action(official_payload)
-            if official_resp.get("status") == "ok":
-                _LOGGER.debug(f"Official action succeeded for {device['id']}: {action}")
-            else:
-                raise Exception(f"Official action failed: {official_resp}")
-        except Exception as e:
-            _LOGGER.warning(f"Official action failed ({e}), attempting legacy scenario fallback")
-
-            # Fallback: create/update scenario and trigger it via Legacy Quasar API
+            item_type = device.get("item_type", "device")
+            r = await self.session.post(
+                f"https://iot.quasar.yandex.ru/m/user/{item_type}s/{device['id']}/actions",
+                json={"actions": [action]},
+            )
             try:
-                device_id = device["id"]
-                name = "ХА " + device_id
-                trigger = encode(device_id)
+                resp = await _safe_response_json(r)
+            finally:
+                r.close()
 
-                # Prepare action as string payload for server_action
-                try:
-                    action_str = json.dumps(action, ensure_ascii=False)
-                except Exception:
-                    action_str = str(action)
+            if resp.get("status") == "ok":
+                _LOGGER.debug(f"Legacy action succeeded for {device['id']}: {action}")
+            else:
+                raise Exception(f"Legacy action failed: {resp}")
 
-                # Ensure scenario exists for device
-                sid = device.get("scenario_id")
-                if not sid:
-                    # create scenario and store id
-                    sid = await self.add_scenario(device_id, trigger)
-                    device["scenario_id"] = sid
-
-                # Update scenario with desired action
-                payload = scenario_speaker_action(name, trigger, device_id, action_str)
-                r = await self.session.put(
-                    f"https://iot.quasar.yandex.ru/m/v4/user/scenarios/{sid}",
-                    json=payload,
-                )
-                try:
-                    resp = await r.json()
-                    if resp.get("status") != "ok":
-                        _LOGGER.warning(f"Legacy scenario update failed: {resp}")
-                    else:
-                        _LOGGER.debug(f"Legacy scenario updated for {device_id}")
-                finally:
-                    r.close()
-
-                # Trigger scenario actions
-                r2 = await self.session.post(
-                    f"https://iot.quasar.yandex.ru/m/user/scenarios/{sid}/actions"
-                )
-                try:
-                    resp2 = await r2.json()
-                    if resp2.get("status") != "ok":
-                        _LOGGER.warning(f"Legacy scenario run failed: {resp2}")
-                    else:
-                        _LOGGER.info(f"Legacy scenario triggered for {device_id}")
-                finally:
-                    r2.close()
-
+        except Exception as e:
+            _LOGGER.debug(f"Legacy action failed ({e}), trying official API")
+            # Try official API as fallback
+            try:
+                official_payload = [{"id": device["id"], "actions": [action]}]
+                official_resp = await self._official_action(official_payload)
+                if official_resp.get("status") == "ok":
+                    _LOGGER.debug(f"Official action succeeded for {device['id']}: {action}")
+                else:
+                    raise Exception(f"Official action failed: {official_resp}")
             except Exception as e2:
-                _LOGGER.error(f"Legacy fallback failed for {device.get('id')}: {e2}")
+                _LOGGER.warning(f"All action methods failed for {device.get('id')}: {e2}")
 
         await asyncio.sleep(1)
 
@@ -827,7 +808,7 @@ class YandexQuasar(Dispatcher):
                 "https://iot.quasar.yandex.ru/m/user/scenarios/history"
             )
             try:
-                raw = await r.json()
+                raw = await _safe_response_json(r)
             finally:
                 r.close()
 
@@ -841,7 +822,7 @@ class YandexQuasar(Dispatcher):
                 f"https://iot.quasar.yandex.ru/m/v4/user/scenarios/launches/{scenario['id']}"
             )
             try:
-                raw = await r.json()
+                raw = await _safe_response_json(r)
             finally:
                 r.close()
 
@@ -888,7 +869,7 @@ class YandexQuasar(Dispatcher):
                 "https://quasar.yandex.ru/get_account_config"
             )
             try:
-                resp = await r.json()
+                resp = await _safe_response_json(r)
                 assert resp["status"] == "ok", resp
                 payload: dict = resp["config"]
             finally:
@@ -902,7 +883,7 @@ class YandexQuasar(Dispatcher):
             )
         
         try:
-            resp = await r.json()
+            resp = await _safe_response_json(r)
             assert resp["status"] == "ok", resp
         finally:
             r.close()
@@ -911,11 +892,11 @@ class YandexQuasar(Dispatcher):
         r = await self.session.post(
             "https://rpc.alice.yandex.ru/gproxy/get_alarms",
             json={"device_ids": [device["quasar_info"]["device_id"]]},
-            headers=ALARM_HEADERS
+            headers=ALARM_HEADERS,
         )
         try:
-            resp = await r.json()
-            return resp["alarms"]
+            resp = await _safe_response_json(r)
+            return resp.get("alarms", [])
         finally:
             r.close()
 

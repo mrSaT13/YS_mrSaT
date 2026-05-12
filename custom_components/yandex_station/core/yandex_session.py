@@ -45,6 +45,18 @@ except ImportError:
 DEFAULT_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 
 
+async def _safe_response_json(r):
+    """Parse response as JSON, fallback to text if content-type is not JSON."""
+    try:
+        return await r.json()
+    except Exception:
+        try:
+            text = await r.text()
+            return json.loads(text)
+        except Exception:
+            return {"status": "error", "raw": (text[:1000] if 'text' in locals() else None)}
+
+
 class LoginResponse:
     """Response wrapper for Yandex login."""
 
@@ -125,11 +137,11 @@ class BasicSession:
 
     async def _get_json(self, url: str, **kwargs):
         async with self._request("get", url, **kwargs) as r:
-            return await r.json()
+            return await _safe_response_json(r)
 
     async def _post_json(self, url: str, **kwargs):
         async with self._request("post", url, **kwargs) as r:
-            return await r.json()
+            return await _safe_response_json(r)
 
     def _get(self, url: str, **kwargs):
         return self._request("get", url, **kwargs)
@@ -502,7 +514,7 @@ class YandexSession(BasicSession):
                     _LOGGER.error(f"Validation failed HTTP {r.status}: {text}")
                     return LoginResponse({"errors": [f"http_{r.status}"]})
                 
-                resp = await r.json()
+                resp = await _safe_response_json(r)
                 resp["x_token"] = x_token
                 _LOGGER.info(f"Token validated for user: {resp.get('login', 'unknown')}")
                 return LoginResponse(resp)
@@ -528,7 +540,7 @@ class YandexSession(BasicSession):
                 headers=headers,
                 data={"type": "x-token", "retpath": "https://www.yandex.ru"},
             ) as r:
-                resp = await r.json()
+                resp = await _safe_response_json(r)
 
             if resp["status"] != "ok":
                 _LOGGER.warning(f"login_token: статус не ok: {resp}")

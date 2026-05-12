@@ -31,7 +31,7 @@ async def get_file_info(
         params=params,
         timeout=5,
     )
-    raw = await r.json()
+    raw = await _safe_response_json(r)
     return raw["result"]["downloadInfo"]
 
 
@@ -40,7 +40,7 @@ async def get_lyrics(session: YandexSession, track_id: int | str) -> str | None:
     r = await session.post(
         "https://api.music.yandex.net/tracks", data={"track-ids": [track_id]}, timeout=5
     )
-    raw = await r.json()
+    raw = await _safe_response_json(r)
     if not raw["result"][0]["lyricsInfo"]["hasAvailableSyncLyrics"]:
         return None
 
@@ -53,7 +53,7 @@ async def get_lyrics(session: YandexSession, track_id: int | str) -> str | None:
         params=params,
         timeout=5,
     )
-    raw = await r.json()
+    raw = await _safe_response_json(r)
     url = raw["result"]["downloadUrl"]
 
     r = await session.get(url, timeout=5)
