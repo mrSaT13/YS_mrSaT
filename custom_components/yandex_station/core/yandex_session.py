@@ -137,6 +137,22 @@ class BasicSession:
     def _post(self, url: str, **kwargs):
         return self._request("post", url, **kwargs)
 
+    # Convenience passthroughs to behave like an aiohttp ClientSession
+    async def get(self, url: str, **kwargs):
+        return await self._request("get", url, **kwargs)
+
+    async def post(self, url: str, **kwargs):
+        return await self._request("post", url, **kwargs)
+
+    async def put(self, url: str, **kwargs):
+        return await self._request("put", url, **kwargs)
+
+    async def delete(self, url: str, **kwargs):
+        return await self._request("delete", url, **kwargs)
+
+    async def patch(self, url: str, **kwargs):
+        return await self._request("patch", url, **kwargs)
+
     @property
     def closed(self):
         return self._session.closed
