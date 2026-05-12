@@ -606,34 +606,41 @@ class YandexSession(BasicSession):
 
         try:
             _LOGGER.debug(f"→ {method.upper()} {url}")
-            async with self._request(method, url, **kwargs) as r:
-                _LOGGER.info(f"← {method.upper()} {url} → {r.status}")
-                
-                if r.status == 200:
-                    return r
-                elif r.status == 401:
-                    _LOGGER.warning(f"401 Unauthorized for {url}")
-                    if self.x_token:
-                        _LOGGER.debug("Got 401, refreshing cookies...")
-                        await self.refresh_cookies()
-                        if retry > 0:
-                            return await self.request(method, url, retry - 1, **kwargs)
-                elif r.status == 403:
-                    _LOGGER.warning(f"403 Forbidden for {url}")
-                    # set cooldown for the host to avoid rapid repeated 403s
-                    host = urlparse(url).netloc
-                    cooldown = 300  # 5 minutes
-                    self._forbidden_cooldowns[host] = time.time() + cooldown
-                    _LOGGER.warning(f"Set 403 cooldown for {host} ({cooldown}s)")
-                    # Do not retry immediately; raise to caller so caller can decide
-                    raise Exception(f"{url} returned 403")
-                
-                if retry > 0:
-                    _LOGGER.debug(f"Retrying {method} {url} (status {r.status})")
-                    await asyncio.sleep(1)
-                    return await self.request(method, url, retry - 1, **kwargs)
+            r = await self._request(method, url, **kwargs)
+            _LOGGER.info(f"← {method.upper()} {url} → {r.status}")
 
-                raise Exception(f"{url} returned {r.status}")
+            if r.status == 200:
+                # Важно: возвращаем открытый response, его закрывает вызывающий код.
+                return r
+
+            if r.status == 401:
+                r.close()
+                _LOGGER.warning(f"401 Unauthorized for {url}")
+                if self.x_token:
+                    _LOGGER.debug("Got 401, refreshing cookies...")
+                    await self.refresh_cookies()
+                    if retry > 0:
+                        return await self.request(method, url, retry - 1, **kwargs)
+
+            elif r.status == 403:
+                r.close()
+                _LOGGER.warning(f"403 Forbidden for {url}")
+                # set cooldown for the host to avoid rapid repeated 403s
+                host = urlparse(url).netloc
+                cooldown = 300  # 5 minutes
+                self._forbidden_cooldowns[host] = time.time() + cooldown
+                _LOGGER.warning(f"Set 403 cooldown for {host} ({cooldown}s)")
+                # Do not retry immediately; raise to caller so caller can decide
+                raise Exception(f"{url} returned 403")
+            else:
+                r.close()
+
+            if retry > 0:
+                _LOGGER.debug(f"Retrying {method} {url} (status {r.status})")
+                await asyncio.sleep(1)
+                return await self.request(method, url, retry - 1, **kwargs)
+
+            raise Exception(f"{url} returned {r.status}")
         except asyncio.TimeoutError as e:
             _LOGGER.error(f"⏱️ Timeout for {method.upper()} {url}: {e}")
             if retry > 0:

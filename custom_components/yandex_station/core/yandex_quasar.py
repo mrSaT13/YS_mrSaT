@@ -5,7 +5,6 @@ import ssl
 from datetime import datetime
 
 import aiohttp
-from aiohttp import WSMsgType
 
 from .quasar_info import has_quasar
 from .yandex_session import YandexSession
@@ -227,89 +226,129 @@ class YandexQuasar(Dispatcher):
         self._ssl_context_created = True
         return self.ssl_context
 
+    def _official_headers(self) -> dict:
+        if not self.session.x_token:
+            raise Exception("x_token required")
+        return {
+            "Authorization": f"Bearer {self.session.x_token}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
+
+    async def _official_query_device(self, device_id: str) -> dict:
+        r = await self.session.post(
+            "https://api.iot.yandex.net/v1.0/user/devices/query",
+            headers=self._official_headers(),
+            json={"devices": [{"id": device_id}]},
+        )
+        try:
+            resp = await r.json()
+            devices = resp.get("devices") or []
+            if devices:
+                return devices[0]
+            raise Exception(f"Official query response without devices: {resp}")
+        finally:
+            r.close()
+
+    async def _official_action(self, actions: list[dict]) -> dict:
+        r = await self.session.post(
+            "https://api.iot.yandex.net/v1.0/user/devices/action",
+            headers=self._official_headers(),
+            json={"payload": {"devices": actions}},
+        )
+        try:
+            return await r.json()
+        finally:
+            r.close()
+
+    async def _official_list_devices(self) -> list[dict]:
+        r = await self.session.get(
+            "https://api.iot.yandex.net/v1.0/user/devices",
+            headers=self._official_headers(),
+            timeout=aiohttp.ClientTimeout(total=30, sock_connect=10, sock_read=20),
+        )
+        try:
+            resp = await r.json()
+            devices = resp.get("devices")
+            if not isinstance(devices, list):
+                raise Exception(f"Official list response without devices: {resp}")
+            return devices
+        finally:
+            r.close()
+
+    async def _official_query_devices(self, device_ids: list[str]) -> list[dict]:
+        if not device_ids:
+            return []
+
+        r = await self.session.post(
+            "https://api.iot.yandex.net/v1.0/user/devices/query",
+            headers=self._official_headers(),
+            json={"devices": [{"id": did} for did in device_ids]},
+            timeout=aiohttp.ClientTimeout(total=30, sock_connect=10, sock_read=20),
+        )
+        try:
+            resp = await r.json()
+            devices = resp.get("devices")
+            if not isinstance(devices, list):
+                raise Exception(f"Official query response without devices: {resp}")
+            return devices
+        finally:
+            r.close()
+
+    def _merge_official_devices(
+        self, listed: list[dict], queried: list[dict], dispatch: bool = False
+    ):
+        prev_by_id = {d["id"]: d for d in self.devices or [] if "id" in d}
+        queried_by_id = {d["id"]: d for d in queried if "id" in d}
+
+        merged_devices: list[dict] = []
+        for listed_device in listed:
+            did = listed_device.get("id")
+            if not did:
+                continue
+
+            prev = prev_by_id.get(did, {})
+            queried_device = queried_by_id.get(did, {})
+
+            merged = {**prev, **listed_device, **queried_device}
+            merged.setdefault("item_type", "device")
+
+            room = merged.get("room")
+            if isinstance(room, dict):
+                room_name = room.get("name")
+                if room_name:
+                    merged["room_name"] = room_name
+            elif isinstance(room, str) and room:
+                merged["room_name"] = room
+
+            merged_devices.append(merged)
+
+        self.devices = merged_devices
+
+        if not dispatch:
+            return
+
+        for device in self.devices:
+            self.dispatch_update(device["id"], device)
+
 
 
     async def init(self):
-        """Основная функция - минималистичный запрос без "фингерпринтинга"."""
+        """Основная инициализация через официальный API v1.0."""
         _LOGGER.info("=" * 70)
         _LOGGER.info("🚀 QUASAR INITIALIZATION STARTED")
         _LOGGER.debug(f"x_token present: {bool(self.session.x_token)}")
         _LOGGER.debug(f"x_token length: {len(self.session.x_token or '')}")
 
         try:
-            _LOGGER.info("📡 Sending minimal request to iot.quasar.yandex.ru...")
-            
-            # Минимальные заголовки как у обычного браузера - избегаем "фингерпринтинга"
-            headers = {
-                "Accept": "application/json",
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-            }
-            
-            if self.session.x_token:
-                headers["Authorization"] = f"OAuth {self.session.x_token}"
-                _LOGGER.debug(f"Authorization header added (token length: {len(self.session.x_token)})")
-            else:
-                _LOGGER.error("❌ x_token is empty!")
-                raise Exception("x_token required")
-            
-            # Прямой запрос через внутреннюю сессию с минимальными параметрами
-            async with self.session._session.get(
-                "https://iot.quasar.yandex.ru/m/v3/user/devices",
-                headers=headers,
-                timeout=aiohttp.ClientTimeout(total=30, sock_connect=10, sock_read=20),
-                ssl=self._get_ssl_context(),
-            ) as r:
-                _LOGGER.info(f"✅ Response received: HTTP {r.status}")
-                _LOGGER.debug(f"Response headers: Content-Type={r.content_type}, Length={r.content_length}")
-                
-                if r.status != 200:
-                    try:
-                        raw_text = await asyncio.wait_for(r.text(), timeout=5)
-                        _LOGGER.error(f"HTTP {r.status} error: {raw_text[:300]}")
-                    except:
-                        _LOGGER.error(f"HTTP {r.status} (could not read error body)")
-                    raise Exception(f"IoT Quasar returned {r.status}")
-                
-                _LOGGER.info("📖 Reading response body via r.read()...")
-                try:
-                    # Читаем сырые байты вместо r.text() - избегаем потенциальных проблем с декодированием
-                    raw_bytes = await asyncio.wait_for(r.read(), timeout=20)
-                    _LOGGER.debug(f"📄 Raw bytes received: {len(raw_bytes)} bytes")
-                    
-                    # Декодируем вручную
-                    body_text = raw_bytes.decode('utf-8', errors='replace')
-                    _LOGGER.debug(f"Decoded text preview: {body_text[:200]}")
-                    
-                    _LOGGER.info("📖 Parsing JSON from body...")
-                    resp = json.loads(body_text)
-                    status = resp.get('status', 'unknown')
-                    _LOGGER.info(f"✅ JSON parsed. API status: '{status}'")
-                    
-                except asyncio.TimeoutError:
-                    _LOGGER.error("⏱️ TIMEOUT reading response body (>20s)")
-                    raise Exception("Timeout reading response body")
-                except json.JSONDecodeError as je:
-                    _LOGGER.error(f"❌ JSON decode error: {je}")
-                    raise
-                except Exception as e:
-                    _LOGGER.error(f"❌ Body read error: {type(e).__name__}: {e}")
-                    raise
-                if resp.get("status") != "ok":
-                    _LOGGER.error(f"API returned status '{status}' instead of 'ok'")
-                    raise Exception(f"Invalid API status: {status}")
+            _LOGGER.info("📡 Fetching devices via official API v1.0...")
+            listed = await self._official_list_devices()
+            queried = await self._official_query_devices(
+                [d["id"] for d in listed if d.get("id")]
+            )
+            self._merge_official_devices(listed, queried, dispatch=False)
 
-                self.devices = []
-                household_count = len(resp.get("households", []))
-                _LOGGER.info(f"📦 Processing {household_count} households...")
-
-                for house in resp["households"]:
-                    device_list = house.get("all", [])
-                    _LOGGER.debug(f"  {house.get('name')}: {len(device_list)} devices")
-                    self.devices.extend(
-                        {**device, "house_name": house["name"]} for device in device_list
-                    )
-                
-                _LOGGER.info(f"✅ Total devices loaded: {len(self.devices)}")
+            _LOGGER.info(f"✅ Total devices loaded: {len(self.devices)}")
 
             await self.load_scenarios()
             await self.load_speakers()
@@ -362,20 +401,12 @@ class YandexQuasar(Dispatcher):
 
     async def load_scenarios(self):
         """Получает список сценариев."""
-        # Делает минималистичный запрос и читает сырые байты, затем парсит JSON
-        headers = {
-            "Accept": "application/json",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        }
-        if self.session.x_token:
-            headers["Authorization"] = f"OAuth {self.session.x_token}"
-
-        async with self.session._session.get(
+        r = await self.session.get(
             f"https://iot.quasar.yandex.ru/m/user/scenarios",
-            headers=headers,
             timeout=aiohttp.ClientTimeout(total=30, sock_connect=10, sock_read=20),
             ssl=self._get_ssl_context(),
-        ) as r:
+        )
+        try:
             _LOGGER.info(f"← GET /m/user/scenarios -> {r.status}")
             if r.status != 200:
                 text = await r.text()
@@ -394,6 +425,8 @@ class YandexQuasar(Dispatcher):
             except json.JSONDecodeError as e:
                 _LOGGER.error(f"Failed to decode scenarios JSON: {e}; body start: {body[:300]}")
                 raise
+        finally:
+            r.close()
 
         assert resp.get("status") == "ok", resp
         self.scenarios = resp["scenarios"]
@@ -496,7 +529,7 @@ class YandexQuasar(Dispatcher):
             _LOGGER.exception("Load local speakers")
             return None
 
-    async def get_device_config(self, device: dict) -> (dict, str):
+    async def get_device_config(self, device: dict) -> tuple[dict, str]:
         did = device["id"]
         r = await self.session.get(
             f"https://iot.quasar.yandex.ru/m/v2/user/devices/{did}/configuration"
@@ -529,15 +562,16 @@ class YandexQuasar(Dispatcher):
             r.close()
 
     async def get_device(self, device: dict):
-        r = await self.session.get(
-            f"https://iot.quasar.yandex.ru/m/user/{device['item_type']}s/{device['id']}"
-        )
-        try:
-            resp = await r.json()
-            assert resp["status"] == "ok", resp
-            return resp
-        finally:
-            r.close()
+        queried = await self._official_query_device(device["id"])
+        return {
+            "status": "ok",
+            "id": queried.get("id", device["id"]),
+            "name": queried.get("name", device.get("name")),
+            "capabilities": queried.get("capabilities", []),
+            "properties": queried.get("properties", []),
+            "type": queried.get("type", device.get("type")),
+            "state": queried.get("state"),
+        }
 
     async def device_action(self, device: dict, instance: str, value, relative=False):
         action = {
@@ -548,15 +582,10 @@ class YandexQuasar(Dispatcher):
         if relative:
             action["state"]["relative"] = True
 
-        r = await self.session.post(
-            f"https://iot.quasar.yandex.ru/m/user/{device['item_type']}s/{device['id']}/actions",
-            json={"actions": [action]}
-        )
-        try:
-            resp = await r.json()
-            assert resp["status"] == "ok", resp
-        finally:
-            r.close()
+        official_payload = [{"id": device["id"], "actions": [action]}]
+        official_resp = await self._official_action(official_payload)
+        if official_resp.get("status") != "ok":
+            raise Exception(f"Official action failed: {official_resp}")
 
         await asyncio.sleep(1)
 
@@ -571,14 +600,11 @@ class YandexQuasar(Dispatcher):
             "type": IOT_TYPES[instance],
         }
 
-        url = f"https://iot.quasar.yandex.ru/m/user/{device['item_type']}s/{device['id']}/actions"
-        r = await self.session.post(url, json={"actions": [action]})
-        try:
-            resp = await r.json()
-            assert resp["status"] == "ok", resp
-            return resp["devices"]
-        finally:
-            r.close()
+        official_payload = [{"id": device["id"], "actions": [action]}]
+        resp = await self._official_action(official_payload)
+        if resp.get("status") != "ok":
+            raise Exception(f"Official action failed: {resp}")
+        return resp.get("devices", [])
 
     async def device_actions(self, device: dict, **kwargs):
         _LOGGER.debug(f"Device action: {kwargs}")
@@ -595,15 +621,10 @@ class YandexQuasar(Dispatcher):
             )
             actions.append({"type": type_, "state": state})
 
-        r = await self.session.post(
-            f"https://iot.quasar.yandex.ru/m/user/{device['item_type']}s/{device['id']}/actions",
-            json={"actions": actions}
-        )
-        try:
-            resp = await r.json()
-            assert resp["status"] == "ok", resp
-        finally:
-            r.close()
+        official_payload = [{"id": device["id"], "actions": actions}]
+        official_resp = await self._official_action(official_payload)
+        if official_resp.get("status") != "ok":
+            raise Exception(f"Official multi-action failed: {official_resp}")
 
         device = await self.get_device(device)
         self.dispatch_update(device["id"], device)
@@ -611,15 +632,19 @@ class YandexQuasar(Dispatcher):
     async def device_color(self, device: dict, **kwargs):
         _LOGGER.debug(f"Device color: {kwargs}")
 
-        r = await self.session.post(
-            f"https://iot.quasar.yandex.ru/m/v3/user/custom/group/color/apply",
-            json={"device_ids": [device['id']], **kwargs}
-        )
-        try:
-            resp = await r.json()
-            assert resp["status"] == "ok", resp
-        finally:
-            r.close()
+        actions = []
+        for instance, value in kwargs.items():
+            actions.append(
+                {
+                    "type": IOT_TYPES[instance],
+                    "state": {"instance": instance, "value": value},
+                }
+            )
+
+        official_payload = [{"id": device["id"], "actions": actions}]
+        official_resp = await self._official_action(official_payload)
+        if official_resp.get("status") != "ok":
+            raise Exception(f"Official color action failed: {official_resp}")
 
         device = await self.get_device(device)
         self.dispatch_update(device["id"], device)
@@ -632,92 +657,39 @@ class YandexQuasar(Dispatcher):
         self.online_updated.clear()
 
         try:
-            r = await self.session.get(
-                "https://quasar.yandex.ru/devices_online_stats"
-            )
-            try:
-                raw = await asyncio.wait_for(r.read(), timeout=20)
-                resp = json.loads(raw.decode('utf-8', errors='replace'))
-                assert resp["status"] == "ok", resp
-            except asyncio.TimeoutError:
-                raise Exception("Timeout reading online stats")
-            except Exception as e:
-                _LOGGER.error(f"Failed to parse online stats: {e}")
-                raise
-            finally:
-                r.close()
+            speaker_ids = [
+                d.get("id")
+                for d in self.devices or []
+                if d.get("id") and has_quasar(d)
+            ]
+            queried = await self._official_query_devices(speaker_ids)
         except Exception:
             return
         finally:
             self.online_updated.set()
 
-        for speaker in resp["items"]:
-            for device in self.devices:
-                if (
-                    "quasar_info" not in device
-                    or device["quasar_info"]["device_id"] != speaker["id"]
-                ):
-                    continue
-                device["online"] = speaker["online"]
-                break
+        queried_by_id = {d.get("id"): d for d in queried if d.get("id")}
+        for device in self.devices or []:
+            did = device.get("id")
+            if not did or did not in queried_by_id:
+                continue
+            state = queried_by_id[did].get("state")
+            device["online"] = state == "online"
 
     async def connect(self):
-        r = await self.session.get(
-            "https://iot.quasar.yandex.ru/m/v3/user/devices"
+        listed = await self._official_list_devices()
+        queried = await self._official_query_devices(
+            [d["id"] for d in listed if d.get("id")]
         )
-        try:
-            raw = await asyncio.wait_for(r.read(), timeout=20)
-            resp = json.loads(raw.decode('utf-8', errors='replace'))
-            assert resp["status"] == "ok", resp
-        except asyncio.TimeoutError:
-            raise Exception("Timeout reading devices for connect")
-        except Exception as e:
-            _LOGGER.error(f"Failed to parse devices in connect: {e}")
-            raise
-        finally:
-            r.close()
-
-        for house in resp["households"]:
-            if "sharing_info" in house:
-                continue
-            for device in house["all"]:
-                self.dispatch_update(device["id"], device)
-
-        ws = await self.session.ws_connect(resp["updates_url"], heartbeat=60)
-        async for msg in ws:
-            if msg.type != WSMsgType.TEXT:
-                break
-            resp = msg.json()
-            operation = resp.get("operation")
-            if operation == "update_states":
-                try:
-                    resp = json.loads(resp["message"])
-                    for device in resp["updated_devices"]:
-                        self.dispatch_update(device["id"], device)
-                except Exception as e:
-                    _LOGGER.debug(f"Parse quasar update error: {msg.data}", exc_info=e)
-
-            elif operation == "update_scenario_list":
-                if '"source":"create_scenario_launch"' in resp["message"]:
-                    _ = asyncio.create_task(self.get_voice_trigger(1))
+        self._merge_official_devices(listed, queried, dispatch=True)
 
     async def devices_passive_update(self, *args):
         try:
-            r = await self.session.get(
-                f"https://iot.quasar.yandex.ru/m/v3/user/devices", 
-                timeout=15
+            listed = await self._official_list_devices()
+            queried = await self._official_query_devices(
+                [d["id"] for d in listed if d.get("id")]
             )
-            try:
-                resp = await r.json()
-                assert resp["status"] == "ok", resp
-
-                for house in resp["households"]:
-                    if "sharing_info" in house:
-                        continue
-                    for device in house["all"]:
-                        self.dispatch_update(device["id"], device)
-            finally:
-                r.close()
+            self._merge_official_devices(listed, queried, dispatch=True)
         except Exception as e:
             _LOGGER.debug(f"Devices forceupdate problem: {repr(e)}")
 
