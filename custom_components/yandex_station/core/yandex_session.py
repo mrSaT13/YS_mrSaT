@@ -477,12 +477,11 @@ class YandexSession(BasicSession):
             return LoginResponse({"errors": [f"network_error: {str(e)}"]})
 
     async def login_token(self, x_token: str) -> bool:
-        """Login with x-token to get cookies."""
+        """Login with x-token to get cookies, затем оживить cookies через профиль."""
         headers = {
             "Ya-Consumer-Authorization": f"OAuth {x_token}",
             "User-Agent": DEFAULT_UA
         }
-        
         try:
             async with self._post(
                 "https://mobileproxy.passport.yandex.net/1/bundle/auth/x_token/",
@@ -490,17 +489,30 @@ class YandexSession(BasicSession):
                 data={"type": "x-token", "retpath": "https://www.yandex.ru"},
             ) as r:
                 resp = await r.json()
-                
+
             if resp["status"] != "ok":
                 return False
-                
+
             host = resp["passport_host"]
             async with self._get(
                 f"{host}/auth/session/", 
                 params={"track_id": resp["track_id"]}, 
                 allow_redirects=False
             ) as r:
-                pass 
+                pass
+
+            # Оживляем cookies через профиль
+            try:
+                async with self._get("https://passport.yandex.ru/profile") as r:
+                    await r.text()
+                _LOGGER.info("Профиль Яндекса запрошен для оживления cookies после login_token")
+            except Exception as e:
+                _LOGGER.warning(f"Ошибка при запросе профиля Яндекса: {e}")
+
+            # Логируем все cookies после login_token
+            for c in self._session.cookie_jar:
+                _LOGGER.warning(f"COOKIE после login_token: {c.key}={c.value}; domain={c.domain}")
+
             return True
         except Exception as e:
             _LOGGER.error(f"Login token error: {e}")
