@@ -154,7 +154,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         raise ConfigEntryNotReady from e
 
     if not ok:
-        hass.helpers.persistent_notification.async_create(
+        from homeassistant.components import persistent_notification
+        persistent_notification.async_create(
+            hass,
             "Необходимо заново авторизоваться в Яндексе. Для этого [добавьте "
             "новую интеграцию](/config/integrations) с тем же логином.",
             title="Yandex.Station",

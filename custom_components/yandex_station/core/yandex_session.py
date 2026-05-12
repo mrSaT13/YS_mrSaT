@@ -512,7 +512,9 @@ class YandexSession(BasicSession):
 
             # Логируем все cookies после login_token
             for c in self._session.cookie_jar:
-                _LOGGER.warning(f"COOKIE после login_token: {c.key}={c.value}; domain={c.domain}")
+                # В aiohttp cookie_jar объекты не имеют атрибута domain напрямую, 
+                # нужно смотреть в аргументы или просто выводить ключ/значение
+                _LOGGER.warning(f"COOKIE после login_token: {c.key}={c.value}")
 
             return True
         except Exception as e:
