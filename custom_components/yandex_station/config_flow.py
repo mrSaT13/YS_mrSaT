@@ -176,9 +176,7 @@ class YandexStationFlowHandler(ConfigFlow, domain=DOMAIN):
         return await self._check_yandex_response(resp)
 
     async def _check_yandex_response(self, resp: LoginResponse):
-        """Check Yandex response. Do not create entry for the same login. Show
-        captcha form if captcha required. Show auth form with error if error.
-        """
+        """Check Yandex response. Handle captcha, 2FA, push, and log errors."""
         if resp.ok:
             # set unique_id or return existing entry
             entry = await self.async_set_unique_id(resp.display_login)
@@ -188,33 +186,51 @@ class YandexStationFlowHandler(ConfigFlow, domain=DOMAIN):
                     entry, data={"x_token": resp.x_token}
                 )
                 return self.async_abort(reason="account_updated")
-
             else:
                 # create new entry for new login
                 return self.async_create_entry(
                     title=resp.display_login, data={"x_token": resp.x_token}
                 )
 
-        elif resp.error_captcha_required:
-            _LOGGER.debug("Captcha required")
+        # Капча
+        if resp.error_captcha_required or (resp.errors and any("captcha" in e for e in resp.errors)):
+            _LOGGER.debug(f"Captcha required: {resp.errors}")
             return self.async_show_form(
                 step_id="captcha",
-                data_schema=vol.Schema(
-                    {
-                        vol.Required("captcha_answer"): str,
-                    }
-                ),
-                description_placeholders={
-                    "captcha_url": await self.yandex.get_captcha()
-                },
+                data_schema=vol.Schema({vol.Required("captcha_answer"): str}),
+                description_placeholders={"captcha_url": await self.yandex.get_captcha()},
             )
 
-        elif resp.errors:
-            _LOGGER.debug(f"Config error: {resp.error}")
-            if self.cur_step:
-                self.cur_step["errors"] = {"base": resp.error}
-                return self.cur_step
+        # 2FA (код из SMS, приложения, e-mail)
+        if resp.errors and any(e in ("need_2fa", "2fa.required", "twofa.required") for e in resp.errors):
+            _LOGGER.debug(f"2FA required: {resp.errors}")
+            return self.async_show_form(
+                step_id="twofa",
+                data_schema=vol.Schema({vol.Required("twofa_code"): str}),
+                description_placeholders={"info": "Введите код из SMS или приложения Яндекс."},
+            )
 
+        # Push-код (подтверждение входа)
+        if resp.errors and any("push.required" in e for e in resp.errors):
+            _LOGGER.debug(f"Push confirmation required: {resp.errors}")
+            return self.async_show_form(
+                step_id="push",
+                data_schema=vol.Schema({vol.Required("push_code"): str}),
+                description_placeholders={"info": "Введите код из пуш-уведомления Яндекс."},
+            )
+
+        # Неизвестная ошибка — показать пользователю текст ошибки
+        if resp.errors:
+            _LOGGER.error(f"Yandex auth error: {resp.errors}")
+            if self.cur_step:
+                # Показываем первую ошибку, если есть
+                self.cur_step["errors"] = {"base": resp.errors[0]}
+                return self.cur_step
+            # Если нет self.cur_step — просто abort с ошибкой
+            raise AbortFlow(f"Yandex error: {resp.errors}")
+
+        # Если ничего не подошло — логируем всё
+        _LOGGER.error(f"Unknown Yandex response: {resp.raw}")
         raise AbortFlow("not_implemented")
 
     @callback

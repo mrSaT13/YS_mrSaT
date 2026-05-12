@@ -31,7 +31,17 @@ except ImportError:
 
 _LOGGER = logging.getLogger(__name__)
 
-# Дефолтный User-Agent
+
+# Passport OAuth client credentials (scope для quasar)
+try:
+    from ya_passport_auth.constants import (
+        PASSPORT_CLIENT_ID,
+        PASSPORT_CLIENT_SECRET,
+    )
+except ImportError:
+    PASSPORT_CLIENT_ID = "c0ebe342af7d48fbbbfcf2d2eedb8f9e"
+    PASSPORT_CLIENT_SECRET = "ad0a908f0aa341a182a37ecd75bc319e"
+
 DEFAULT_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 
 
@@ -389,14 +399,13 @@ class YandexSession(BasicSession):
         return await self.login_cookies()
 
     async def login_cookies(self, cookies: str = None) -> LoginResponse:
-        """Exchange cookies for x-token. Если cookies в формате JSON — сразу кладём их в cookie_jar."""
+        """Exchange cookies for x-token. Использует Passport client_id для scope quasar."""
         host = "passport.yandex.ru"
         # Если cookies — JSON-экспорт (список объектов), кладём их в cookie_jar
         if cookies and cookies.strip().startswith("["):
             try:
                 raw = json.loads(cookies)
                 for p in raw:
-                    # Пропускаем не yandex-домены
                     if not p["domain"].startswith(".yandex."):
                         continue
                     morsel = Morsel()
@@ -409,7 +418,6 @@ class YandexSession(BasicSession):
                         {p["name"]: morsel},
                         response_url=aiohttp.client_reqrep.URL(f"https://{p['domain'].lstrip('.')}"),
                     )
-                # После этого cookies будут доступны для дальнейших запросов
                 cookies = "; ".join([f"{p['name']}={p['value']}" for p in raw])
             except Exception as e:
                 _LOGGER.warning(f"Не удалось обработать JSON cookies: {e}")
@@ -422,9 +430,9 @@ class YandexSession(BasicSession):
         if not cookies:
             return LoginResponse({"errors": ["no_cookies_found"]})
 
-        # Client ID и Secret от Яндекс.Музыки
-        client_id = "23cabbbdc6cd418abb4b39c32c41195d"
-        client_secret = "53bc75238f0c4d08a118e51fe9203300"
+        # Passport client_id/secret (scope для quasar)
+        client_id = PASSPORT_CLIENT_ID
+        client_secret = PASSPORT_CLIENT_SECRET
 
         headers = {
             "Ya-Client-Host": host,
@@ -441,16 +449,28 @@ class YandexSession(BasicSession):
                     "client_secret": client_secret,
                 },
             )
-
             if "access_token" not in resp:
                 _LOGGER.error(f"Token exchange failed: {resp}")
                 return LoginResponse(resp)
-
             return await self.validate_token(resp["access_token"])
-
         except Exception as e:
             _LOGGER.error(f"Cookie exchange error: {e}", exc_info=True)
             return LoginResponse({"errors": [f"exchange_error: {str(e)}"]})
+    async def _ensure_csrf_token(self) -> None:
+        """Ленивая загрузка x-csrf-token для не-GET Quasar/Alice запросов."""
+        if self.csrf_token:
+            return
+        try:
+            async with self._get("https://yandex.ru/quasar", timeout=10) as page:
+                text = await page.text()
+                m = re.search(r'"csrfToken2":"(.+?)"', text)
+                if m:
+                    self.csrf_token = m.group(1)
+                    _LOGGER.debug("Quasar CSRF token fetched")
+                else:
+                    _LOGGER.warning("Quasar CSRF token not found on /quasar")
+        except Exception as e:
+            _LOGGER.warning(f"Failed to fetch Quasar CSRF: {e}")
 
     async def validate_token(self, x_token: str) -> LoginResponse:
         """Validate x-token."""
@@ -539,7 +559,18 @@ class YandexSession(BasicSession):
             return False
 
     async def refresh_cookies(self) -> bool:
-        """Refresh cookies if expired."""
+        """Refresh cookies if expired. Пробует storage=1, если невалидно — login_token."""
+        # Оптимистичный probe: если сессионные cookies в jar валидны,
+        # storage отдаст uid — перелогин не нужен (см. AlexxIT/YandexStation#764).
+        try:
+            async with self._get("https://yandex.ru/quasar?storage=1", timeout=10) as r:
+                if r.status == 200:
+                    data = await r.json(content_type=None)
+                    if data.get("storage", {}).get("user", {}).get("uid"):
+                        _LOGGER.debug("refresh_cookies: storage uid OK")
+                        return True
+        except Exception as e:
+            _LOGGER.debug(f"storage=1 probe failed, falling back: {e}")
         if self.x_token:
             return await self.login_token(self.x_token)
         return False
@@ -560,8 +591,7 @@ class YandexSession(BasicSession):
             return None
 
     async def request(self, method: str, url: str, retry: int = 2, **kwargs):
-        """Public request function with retry logic and minimal headers for Quasar."""
-        # If this URL/host is in cooldown after recent 403, avoid hitting it.
+        """Public request function with retry logic, CSRF, Passport client_id, подробный лог."""
         key = urlparse(url).netloc or url
         until = self._forbidden_cooldowns.get(key)
         if until and time.time() < until:
@@ -572,24 +602,27 @@ class YandexSession(BasicSession):
             await asyncio.sleep(delay)
         self.last_ts = time.time()
 
-        # Добавляем дефолтные заголовки
         headers = kwargs.setdefault("headers", {})
         headers.setdefault("User-Agent", DEFAULT_UA)
-        
-        # Если это запрос к Quasar/IoT, добавляем токен и МИНИМАЛЬНЫЕ заголовки
-        if "iot.quasar" in url or "quasar.yandex" in url:
-            # Если вызывающий код уже передал Authorization (например, с music_token),
-            # НЕ перезаписываем его. В противном случае используем x_token.
+
+        # CSRF для не-GET Quasar/Alice
+        is_quasar = "iot.quasar" in url or "quasar.yandex" in url
+        is_alice = "alice.yandex" in url
+        if is_quasar or is_alice:
             if "Authorization" not in headers:
                 if self.x_token:
                     headers["Authorization"] = f"OAuth {self.x_token}"
                 else:
                     _LOGGER.error(f"❌ x_token is empty for Quasar request to {url}!")
                     raise Exception("x_token required for Quasar request")
-
-            # Минимальные заголовки - избегаем фингерпринтинга
+            # Минимальные заголовки
             headers.setdefault("Accept", "application/json")
             headers.setdefault("Connection", "keep-alive")
+            # CSRF только для не-GET
+            if method.lower() != "get":
+                await self._ensure_csrf_token()
+                if self.csrf_token:
+                    headers["x-csrf-token"] = self.csrf_token
             # Debug which Authorization (masked) is being used for Quasar requests
             auth_preview = None
             if "Authorization" in headers:
@@ -599,20 +632,13 @@ class YandexSession(BasicSession):
                 except Exception:
                     auth_preview = "<unavailable>"
             _LOGGER.debug(f"Quasar request to {url} with headers: {list(headers.keys())} Authorization={auth_preview}")
-        elif "alice.yandex" in url:
-            if self.x_token:
-                headers["Authorization"] = f"OAuth {self.x_token}"
-                _LOGGER.debug(f"Added Authorization header for Alice {url}")
-
         try:
             _LOGGER.debug(f"→ {method.upper()} {url}")
             r = await self._request(method, url, **kwargs)
             _LOGGER.info(f"← {method.upper()} {url} → {r.status}")
-
             if r.status == 200:
-                # Важно: возвращаем открытый response, его закрывает вызывающий код.
                 return r
-
+            # 401 Unauthorized
             if r.status == 401:
                 r.close()
                 _LOGGER.warning(f"401 Unauthorized for {url}")
@@ -621,25 +647,31 @@ class YandexSession(BasicSession):
                     await self.refresh_cookies()
                     if retry > 0:
                         return await self.request(method, url, retry - 1, **kwargs)
-
+            # 403 Forbidden
             elif r.status == 403:
+                # Для не-GET Quasar/Alice: сбрасываем CSRF и ретраим 1 раз до cooldown
+                if (is_quasar or is_alice) and method.lower() != "get" and self.csrf_token:
+                    _LOGGER.debug("Got 403 on non-GET Quasar, dropping CSRF and retrying")
+                    self.csrf_token = None
+                    r.close()
+                    if retry > 0:
+                        return await self.request(method, url, retry - 1, **kwargs)
                 r.close()
                 _LOGGER.warning(f"403 Forbidden for {url}")
-                # set cooldown for the host to avoid rapid repeated 403s
                 host = urlparse(url).netloc
-                cooldown = 300  # 5 minutes
+                cooldown = 300  # 5 минут
                 self._forbidden_cooldowns[host] = time.time() + cooldown
                 _LOGGER.warning(f"Set 403 cooldown for {host} ({cooldown}s)")
-                # Do not retry immediately; raise to caller so caller can decide
                 raise Exception(f"{url} returned 403")
             else:
+                # Подробный лог ошибки
+                text = await r.text()
+                _LOGGER.error(f"HTTP {r.status} for {url}: {text[:300]}")
                 r.close()
-
             if retry > 0:
                 _LOGGER.debug(f"Retrying {method} {url} (status {r.status})")
                 await asyncio.sleep(1)
                 return await self.request(method, url, retry - 1, **kwargs)
-
             raise Exception(f"{url} returned {r.status}")
         except asyncio.TimeoutError as e:
             _LOGGER.error(f"⏱️ Timeout for {method.upper()} {url}: {e}")
@@ -648,19 +680,14 @@ class YandexSession(BasicSession):
                 return await self.request(method, url, retry - 1, **kwargs)
             raise
         except Exception as e:
-            # If session is closed, re-raise with clear message
             if isinstance(e, RuntimeError) and "closed" in str(e).lower():
                 _LOGGER.error(f"Session closed when requesting {url}: {e}")
                 raise
-
             _LOGGER.error(f"❌ Request error for {method.upper()} {url}: {type(e).__name__}: {e}")
-            # Retry on common connection errors
             if retry > 0 and isinstance(e, (ClientConnectorError, ConnectionResetError)):
                 _LOGGER.debug(f"Connection error ({type(e).__name__}), retrying {url}")
-                # exponential-ish backoff
                 await asyncio.sleep(1 + (3 - retry) * 2)
                 return await self.request(method, url, retry - 1, **kwargs)
-
             raise
 
     async def get(self, url: str, **kwargs):
