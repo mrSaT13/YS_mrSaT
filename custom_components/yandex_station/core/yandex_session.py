@@ -478,7 +478,13 @@ class YandexSession(BasicSession):
             return LoginResponse({"errors": [f"network_error: {str(e)}"]})
 
     async def login_token(self, x_token: str) -> bool:
-        """Login with x-token to get cookies, затем оживить cookies через профиль."""
+        """Login with x-token to get Session_id/sessar cookies через чистую сессию.
+
+        КРИТИЧНО: запрос к /auth/session/ делается через ЧИСТЫЙ cookie_jar.
+        Если делать его через основной jar с накопленными tracking-cookies,
+        антифрод Яндекса видит "анонимную" сессию и вместо Session_id/sessionid2/L/sessar
+        выдаёт только spravka+технические куки → Quasar/Glagol возвращают 403.
+        """
         headers = {
             "Ya-Consumer-Authorization": f"OAuth {x_token}",
             "User-Agent": DEFAULT_UA
@@ -492,33 +498,44 @@ class YandexSession(BasicSession):
                 resp = await r.json()
 
             if resp["status"] != "ok":
+                _LOGGER.warning(f"login_token: статус не ok: {resp}")
                 return False
 
             host = resp["passport_host"]
-            async with self._get(
-                f"{host}/auth/session/", 
-                params={"track_id": resp["track_id"]}, 
-                allow_redirects=False
-            ) as r:
-                pass
+            track_id = resp["track_id"]
+            ssl_ctx = self._get_ssl_context()
 
-            # Оживляем cookies через профиль
-            try:
-                async with self._get("https://passport.yandex.ru/profile") as r:
+            # Используем чистую сессию без накопленных tracking cookies
+            clean_jar = aiohttp.CookieJar()
+            async with aiohttp.ClientSession(cookie_jar=clean_jar) as clean_session:
+                async with clean_session.get(
+                    f"{host}/auth/session/",
+                    params={"track_id": track_id},
+                    headers={"User-Agent": DEFAULT_UA},
+                    ssl=ssl_ctx,
+                    proxy=self.proxy,
+                    allow_redirects=True,
+                ) as r:
                     await r.text()
-                _LOGGER.info("Профиль Яндекса запрошен для оживления cookies после login_token")
-            except Exception as e:
-                _LOGGER.warning(f"Ошибка при запросе профиля Яндекса: {e}")
 
-            # Логируем все cookies после login_token
-            for c in self._session.cookie_jar:
-                # В aiohttp cookie_jar объекты не имеют атрибута domain напрямую, 
-                # нужно смотреть в аргументы или просто выводить ключ/значение
-                _LOGGER.warning(f"COOKIE после login_token: {c.key}={c.value}")
+            # Копируем полученные cookies из чистой сессии в основную
+            self._session.cookie_jar._cookies.update(clean_jar._cookies)
+
+            # Диагностика: какие cookies реально получены
+            cookie_keys = [c.key for c in self._session.cookie_jar]
+            has_session_id = "Session_id" in cookie_keys
+            _LOGGER.info(f"Cookies после login_token ({len(cookie_keys)} шт.): {cookie_keys}")
+            if has_session_id:
+                _LOGGER.info("✅ Session_id получен — сессионные cookies в норме")
+            else:
+                _LOGGER.warning("❌ Session_id НЕ получен — антифрод мог сработать!")
+
+            # Сохраняем обновлённые cookies в entry.data
+            await self._handle_update()
 
             return True
         except Exception as e:
-            _LOGGER.error(f"Login token error: {e}")
+            _LOGGER.error(f"Login token error: {e}", exc_info=True)
             return False
 
     async def refresh_cookies(self) -> bool:
