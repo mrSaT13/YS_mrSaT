@@ -228,80 +228,42 @@ class YandexSession(BasicSession):
             raise Exception("No tokens for glagol/token")
             return LoginResponse({"errors": [str(e)]})
 
+        # Попытка извлечь CSRF-токен из HTML страницы
+        csrf_token = None
+        try:
+            m = re.search(r'name="csrf_token" value="([^"]+)"', resp)
+            if m:
+                csrf_token = m.group(1)
+            else:
+                m2 = re.search(r'csrf_token["\':\s]+"?([0-9a-fA-F-]+)"?', resp)
+                if m2:
+                    csrf_token = m2.group(1)
+        except Exception:
+            csrf_token = None
+
+        if not csrf_token:
+            _LOGGER.warning("CSRF token not found in passport page")
+            raise Exception("CSRF token not found")
+
         self.auth_payload = {"csrf_token": csrf_token}
 
         headers = {
             "X-CSRF-Token": csrf_token,
             "Origin": "https://passport.yandex.ru",
             "Referer": "https://passport.yandex.ru/am?app_platform=android",
-            "User-Agent": DEFAULT_UA
+            "User-Agent": DEFAULT_UA,
         }
 
         try:
+            # Выполняем старт многошаговой авторизации (multistep_start)
             resp = await self._post_json(
                 "https://passport.yandex.ru/pwl-yandex/api/passport/auth/multistep_start",
-                # Выполним запрос с ретраем: при 403 сначала попробуем обновить cookies (refresh_cookies)
-                r = None
-                retries = 1
-                while True:
-                    try:
-                        r = await self.session.get(
-                            "https://quasar.yandex.net/glagol/token", params=payload, headers=headers
-                        )
-                    except Exception as e:
-                        _LOGGER.error(f"[{self.name}] Glagol token request failed: {e}")
-                        return None
-
-                    try:
-                        status = getattr(r, "status", None)
-                        _LOGGER.debug(f"[{self.name}] Glagol response status: {status}")
-
-                        if status == 403:
-                            # log body for diagnosis
-                            try:
-                                body = await r.text()
-                                _LOGGER.debug(f"[{self.name}] Glagol 403 body: {body[:1000]}")
-                            except Exception:
-                                pass
-
-                            # Попробуем обновить cookies и повторить один раз
-                            if retries > 0:
-                                _LOGGER.info(f"[{self.name}] Received 403, attempting refresh_cookies() and retry")
-                                try:
-                                    await self.refresh_cookies()
-                                except Exception as e:
-                                    _LOGGER.debug(f"[{self.name}] refresh_cookies failed: {e}")
-                                retries -= 1
-                                r.close()
-                                continue
-
-                            # окончательный 403 — ставим cooldown
-                            try:
-                                if hasattr(self.session, "_forbidden_cooldowns"):
-                                    self.session._forbidden_cooldowns[host] = time.time() + 300
-                                    _LOGGER.warning(f"[{self.name}] Set 403 cooldown for {host} (300s)")
-                            except Exception:
-                                pass
-                            _LOGGER.warning(f"[{self.name}] Glagol token returned 403; giving up and respecting cooldown")
-                            return None
-
-                        # читаем тело и парсим
-                        resp_text = await r.text()
-                        try:
-                            resp = json.loads(resp_text)
-                        except Exception:
-                            _LOGGER.error(f"[{self.name}] Failed to parse glagol token response: {resp_text[:400]}")
-                            return None
-
-                        _LOGGER.debug(f"[{self.name}] Glagol response status: {resp.get('status')}")
-                        if resp.get("status") != "ok":
-                            _LOGGER.warning(f"[{self.name}] Glagol token response not ok: {resp}")
-                            return None
-
-                        return resp.get("token")
-                    finally:
-                        if r:
-                            r.close()
+                json=self.auth_payload,
+                headers={"User-Agent": DEFAULT_UA},
+            )
+        except Exception as e:
+            _LOGGER.error(f"multistep_start request failed: {e}")
+            return LoginResponse({"errors": [str(e)]})
         if resp.get("status") != "ok":
             return LoginResponse(resp)
 
