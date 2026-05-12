@@ -10,6 +10,7 @@ import re
 import time
 import ssl
 import aiohttp
+from http.cookies import Morsel
 from aiohttp import ClientSession, ClientConnectorError
 from urllib.parse import urlparse
 
@@ -398,7 +399,7 @@ class YandexSession(BasicSession):
                     # Пропускаем не yandex-домены
                     if not p["domain"].startswith(".yandex."):
                         continue
-                    morsel = aiohttp.cookiejar.Morsel()
+                    morsel = Morsel()
                     morsel.set(p["name"], p["value"], p["value"])
                     morsel["domain"] = p["domain"].lstrip(".")
                     morsel["path"] = p.get("path", "/")
