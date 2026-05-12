@@ -281,6 +281,10 @@ class YandexGlagol:
     async def send(self, payload: dict) -> Optional[dict]:
         _LOGGER.debug(f"{self.name} => local | {payload}")
 
+        if not self.ws or self.ws.closed:
+            _LOGGER.warning(f"{self.name} => local | Cannot send: connection is closed or not initialized")
+            return {"error": "Connection closed"}
+
         request_id = str(uuid.uuid4())
 
         try:

@@ -356,29 +356,34 @@ class YandexQuasar(Dispatcher):
 
 
     async def init(self):
-        """Основная инициализация через официальный API v1.0."""
+        """Основная инициализация. По умолчанию используем Legacy Quasar API, так как Official API часто недоступен."""
         _LOGGER.info("=" * 70)
         _LOGGER.info("🚀 QUASAR INITIALIZATION STARTED")
         _LOGGER.debug(f"x_token present: {bool(self.session.x_token)}")
-        _LOGGER.debug(f"x_token length: {len(self.session.x_token or '')}")
+        
+        # Режим работы API. По умолчанию Legacy, так как Official API v1.0 требует особых прав (OAuth scope).
+        use_official = False 
 
         try:
-            try:
-                _LOGGER.info("📡 Fetching devices via official API v1.0...")
-                listed = await self._official_list_devices()
-                queried = await self._official_query_devices(
-                    [d["id"] for d in listed if d.get("id")]
-                )
-                self._merge_official_devices(listed, queried, dispatch=False)
-                _LOGGER.info("✅ Official API v1.0 succeeded")
-            except Exception as official_err:
-                _LOGGER.warning(
-                    f"⚠️ Official API failed ({official_err}), "
-                    "falling back to legacy quasar API..."
-                )
+            if use_official:
+                try:
+                    _LOGGER.info("📡 Trying official API v1.0...")
+                    listed = await self._official_list_devices()
+                    queried = await self._official_query_devices(
+                        [d["id"] for d in listed if d.get("id")]
+                    )
+                    self._merge_official_devices(listed, queried, dispatch=False)
+                    _LOGGER.info("✅ Official API v1.0 succeeded")
+                except Exception as official_err:
+                    _LOGGER.warning(f"⚠️ Official API failed ({official_err}), falling back to legacy...")
+                    listed = await self._legacy_list_devices()
+                    self._merge_official_devices(listed, [], dispatch=False)
+                    _LOGGER.info("✅ Legacy API mode (fallback)")
+            else:
+                _LOGGER.info("📡 Using Legacy Quasar API as primary (iot.quasar.yandex.ru)")
                 listed = await self._legacy_list_devices()
                 self._merge_official_devices(listed, [], dispatch=False)
-                _LOGGER.info("✅ Legacy quasar API succeeded")
+                _LOGGER.info("✅ Legacy API mode")
 
             _LOGGER.info(f"✅ Total devices loaded: {len(self.devices)}")
 
@@ -710,27 +715,34 @@ class YandexQuasar(Dispatcher):
 
     async def connect(self):
         try:
-            listed = await self._official_list_devices()
-            queried = await self._official_query_devices(
-                [d["id"] for d in listed if d.get("id")]
-            )
-        except Exception as e:
-            _LOGGER.warning(f"Official API unavailable in connect ({e}), using legacy")
+            # Всегда предпочитаем Legacy API для стабильности
+            _LOGGER.debug("Connecting via Legacy Quasar API")
             listed = await self._legacy_list_devices()
             queried = []
-        self._merge_official_devices(listed, queried, dispatch=True)
-
-    async def devices_passive_update(self, *args):
-        try:
+        except Exception as e:
+            _LOGGER.warning(f"Legacy API unavailable in connect ({e}), trying official")
             try:
                 listed = await self._official_list_devices()
                 queried = await self._official_query_devices(
                     [d["id"] for d in listed if d.get("id")]
                 )
-            except Exception as e:
-                _LOGGER.debug(f"Official API in passive update ({e}), using legacy")
+            except Exception as e2:
+                _LOGGER.error(f"Both APIs failed in connect: {e2}")
+                return
+        self._merge_official_devices(listed, queried, dispatch=True)
+
+    async def devices_passive_update(self, *args):
+        try:
+            try:
+                # Пассивное обновление тоже через Legacy
                 listed = await self._legacy_list_devices()
                 queried = []
+            except Exception as e:
+                _LOGGER.debug(f"Legacy API in passive update ({e}), trying official")
+                listed = await self._official_list_devices()
+                queried = await self._official_query_devices(
+                    [d["id"] for d in listed if d.get("id")]
+                )
             self._merge_official_devices(listed, queried, dispatch=True)
         except Exception as e:
             _LOGGER.debug(f"Devices forceupdate problem: {repr(e)}")
