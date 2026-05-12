@@ -95,17 +95,21 @@ class BasicSession:
         return self.ssl_context
 
     def _request(self, method: str, url: str, **kwargs):
-        """Internal request function with proxy and ssl support."""
+        """Internal request function with proxy and ssl support. Добавляет User-Agent Яндекс.Браузера."""
         if self.domain:
             url = url.replace("yandex.ru", self.domain)
-        
+
         # Если ssl не передан явно, используем наш контекст (ленивая инициализация)
         if "ssl" not in kwargs:
             kwargs["ssl"] = self._get_ssl_context()
-            
+
         kwargs["proxy"] = self.proxy
         kwargs.setdefault("timeout", 15.0)
-        
+
+        # Добавляем User-Agent Яндекс.Браузера, если не задан
+        headers = kwargs.setdefault("headers", {})
+        headers.setdefault("User-Agent", DEFAULT_UA)
+
         return getattr(self._session, method)(url, **kwargs)
 
     async def _get_json(self, url: str, **kwargs):
@@ -254,15 +258,29 @@ class YandexSession(BasicSession):
 
         if resp.get("status") != "ok":
             return LoginResponse(resp)
-        
+
+        # После успешного логина по паролю — получаем x_token через cookies-flow
+        login_cookies_resp = None
         if "redirect_url" in resp:
             if "/am/finish" in resp["redirect_url"]:
-                return await self.login_cookies()
-            async with self._get(resp["redirect_url"]) as r:
-                await r.text()
-            return await self.login_cookies()
-            
-        return await self.login_cookies()
+                login_cookies_resp = await self.login_cookies()
+            else:
+                async with self._get(resp["redirect_url"]) as r:
+                    await r.text()
+                login_cookies_resp = await self.login_cookies()
+        else:
+            login_cookies_resp = await self.login_cookies()
+
+        # После получения x_token обязательно обновляем cookies через login_token
+        login_token_ok = False
+        if self.x_token:
+            try:
+                login_token_ok = await self.login_token(self.x_token)
+                _LOGGER.info(f"login_token после логин/пароль: {'успешно' if login_token_ok else 'не удалось'}")
+            except Exception as e:
+                _LOGGER.warning(f"Ошибка login_token после логин/пароль: {e}")
+
+        return login_cookies_resp
 
     async def get_qr(self) -> str:
         """Get link to QR-code auth."""
@@ -306,6 +324,15 @@ class YandexSession(BasicSession):
                 except Exception as e:
                     _LOGGER.warning(f"Failed to get music token: {e}")
             
+            # После получения x_token обязательно обновляем cookies через login_token
+            login_token_ok = False
+            if self.x_token:
+                try:
+                    login_token_ok = await self.login_token(self.x_token)
+                    _LOGGER.info(f"login_token после QR: {'успешно' if login_token_ok else 'не удалось'}")
+                except Exception as e:
+                    _LOGGER.warning(f"Ошибка login_token после QR: {e}")
+
             return await self.validate_token(self.x_token)
             
         except QRTimeoutError:
@@ -361,13 +388,36 @@ class YandexSession(BasicSession):
         return await self.login_cookies()
 
     async def login_cookies(self, cookies: str = None) -> LoginResponse:
-        """Exchange cookies for x-token."""
+        """Exchange cookies for x-token. Если cookies в формате JSON — сразу кладём их в cookie_jar."""
         host = "passport.yandex.ru"
+        # Если cookies — JSON-экспорт (список объектов), кладём их в cookie_jar
+        if cookies and cookies.strip().startswith("["):
+            try:
+                raw = json.loads(cookies)
+                for p in raw:
+                    # Пропускаем не yandex-домены
+                    if not p["domain"].startswith(".yandex."):
+                        continue
+                    morsel = aiohttp.cookiejar.Morsel()
+                    morsel.set(p["name"], p["value"], p["value"])
+                    morsel["domain"] = p["domain"].lstrip(".")
+                    morsel["path"] = p.get("path", "/")
+                    if p.get("secure"):
+                        morsel["secure"] = True
+                    self._session.cookie_jar.update_cookies(
+                        {p["name"]: morsel},
+                        response_url=aiohttp.client_reqrep.URL(f"https://{p['domain'].lstrip('.')}"),
+                    )
+                # После этого cookies будут доступны для дальнейших запросов
+                cookies = "; ".join([f"{p['name']}={p['value']}" for p in raw])
+            except Exception as e:
+                _LOGGER.warning(f"Не удалось обработать JSON cookies: {e}")
+
         if cookies is None:
             cookies = "; ".join(
                 [f"{c.key}={c.value}" for c in self._session.cookie_jar if "yandex.ru" in c.domain]
             )
-        
+
         if not cookies:
             return LoginResponse({"errors": ["no_cookies_found"]})
 
@@ -390,13 +440,13 @@ class YandexSession(BasicSession):
                     "client_secret": client_secret,
                 },
             )
-            
+
             if "access_token" not in resp:
                 _LOGGER.error(f"Token exchange failed: {resp}")
                 return LoginResponse(resp)
-                
+
             return await self.validate_token(resp["access_token"])
-            
+
         except Exception as e:
             _LOGGER.error(f"Cookie exchange error: {e}", exc_info=True)
             return LoginResponse({"errors": [f"exchange_error: {str(e)}"]})
