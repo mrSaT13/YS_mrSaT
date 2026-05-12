@@ -29,6 +29,18 @@ except ImportError:
     QRTimeoutError = Exception
     QRPendingError = Exception
 
+# Passport OAuth client credentials. Эти значения — те же, что использует AlexxIT
+# и наша библиотека ya-passport-auth. x_token, выданный против этого client_id,
+# имеет scope для iot.quasar.yandex.ru (в отличие от Music client_id).
+try:
+    from ya_passport_auth.constants import (
+        PASSPORT_CLIENT_ID,
+        PASSPORT_CLIENT_SECRET,
+    )
+except ImportError:
+    PASSPORT_CLIENT_ID = "c0ebe342af7d48fbbbfcf2d2eedb8f9e"
+    PASSPORT_CLIENT_SECRET = "ad0a908f0aa341a182a37ecd75bc319e"
+
 _LOGGER = logging.getLogger(__name__)
 
 # Дефолтный User-Agent
@@ -196,8 +208,30 @@ class YandexSession(BasicSession):
         
         if not m:
             raise Exception("CSRF token not found")
-            
+
         return m[1]
+
+    async def _ensure_csrf_token(self) -> None:
+        """Lazy-fetch CSRF token for non-GET Quasar/Alice requests.
+
+        Идентично оригиналу AlexxIT: тянем со страницы yandex.ru/quasar,
+        парсим "csrfToken2":"...", кэшируем в self.csrf_token. На 403
+        вызывающий код сбрасывает self.csrf_token в None — следующий
+        не-GET перезаберёт токен.
+        """
+        if self.csrf_token:
+            return
+        try:
+            async with self._get("https://yandex.ru/quasar", timeout=10) as page:
+                text = await page.text()
+                m = re.search(r'"csrfToken2":"(.+?)"', text)
+                if m:
+                    self.csrf_token = m.group(1)
+                    _LOGGER.debug("Quasar CSRF token fetched")
+                else:
+                    _LOGGER.warning("Quasar CSRF token not found on /quasar")
+        except Exception as e:
+            _LOGGER.warning(f"Failed to fetch Quasar CSRF: {e}")
 
     async def login_username(self, username: str) -> LoginResponse:
         """Create login session."""
@@ -422,9 +456,10 @@ class YandexSession(BasicSession):
         if not cookies:
             return LoginResponse({"errors": ["no_cookies_found"]})
 
-        # Client ID и Secret от Яндекс.Музыки
-        client_id = "23cabbbdc6cd418abb4b39c32c41195d"
-        client_secret = "53bc75238f0c4d08a118e51fe9203300"
+        # Passport client_id — выдаёт x_token со scope для iot.quasar.yandex.ru.
+        # Music-овые credentials остаются только в get_music_token().
+        client_id = PASSPORT_CLIENT_ID
+        client_secret = PASSPORT_CLIENT_SECRET
 
         headers = {
             "Ya-Client-Host": host,
@@ -540,6 +575,20 @@ class YandexSession(BasicSession):
 
     async def refresh_cookies(self) -> bool:
         """Refresh cookies if expired."""
+        # Оптимистичный probe: если сессионные cookies в jar валидны,
+        # storage отдаст uid — перелогин не нужен (см. AlexxIT/YandexStation#764).
+        try:
+            async with self._get(
+                "https://yandex.ru/quasar?storage=1", timeout=10
+            ) as r:
+                if r.status == 200:
+                    data = await r.json(content_type=None)
+                    if data.get("storage", {}).get("user", {}).get("uid"):
+                        _LOGGER.debug("refresh_cookies: storage uid OK")
+                        return True
+        except Exception as e:
+            _LOGGER.debug(f"storage=1 probe failed, falling back: {e}")
+        # Фолбэк: перевыпуск через x_token (clean-jar внутри login_token)
         if self.x_token:
             return await self.login_token(self.x_token)
         return False
@@ -587,6 +636,14 @@ class YandexSession(BasicSession):
                     _LOGGER.error(f"❌ x_token is empty for Quasar request to {url}!")
                     raise Exception("x_token required for Quasar request")
 
+            # Quasar требует x-csrf-token для не-GET (управление громкостью,
+            # send_command, сценарии). Ленивая инициализация со страницы
+            # yandex.ru/quasar — формат совпадает с AlexxIT/YandexStation.
+            if method.lower() != "get":
+                await self._ensure_csrf_token()
+                if self.csrf_token:
+                    headers["x-csrf-token"] = self.csrf_token
+
             # Минимальные заголовки - избегаем фингерпринтинга
             headers.setdefault("Accept", "application/json")
             headers.setdefault("Connection", "keep-alive")
@@ -603,6 +660,10 @@ class YandexSession(BasicSession):
             if self.x_token:
                 headers["Authorization"] = f"OAuth {self.x_token}"
                 _LOGGER.debug(f"Added Authorization header for Alice {url}")
+            if method.lower() != "get":
+                await self._ensure_csrf_token()
+                if self.csrf_token:
+                    headers["x-csrf-token"] = self.csrf_token
 
         try:
             _LOGGER.debug(f"→ {method.upper()} {url}")
@@ -625,6 +686,20 @@ class YandexSession(BasicSession):
             elif r.status == 403:
                 r.close()
                 _LOGGER.warning(f"403 Forbidden for {url}")
+                # Не-GET к Quasar с уже установленным CSRF: токен мог
+                # протухнуть. Сбрасываем и ретраим один раз ДО установки
+                # 5-мин cooldown — иначе валидный ретрай заблокирован.
+                if (
+                    ("iot.quasar" in url or "quasar.yandex" in url)
+                    and method.lower() != "get"
+                    and self.csrf_token
+                ):
+                    _LOGGER.debug(
+                        "Got 403 on non-GET Quasar, dropping CSRF and retrying"
+                    )
+                    self.csrf_token = None
+                    if retry > 0:
+                        return await self.request(method, url, retry - 1, **kwargs)
                 # set cooldown for the host to avoid rapid repeated 403s
                 host = urlparse(url).netloc
                 cooldown = 300  # 5 minutes
