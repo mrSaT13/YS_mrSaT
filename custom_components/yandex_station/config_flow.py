@@ -26,8 +26,9 @@ _LOGGER = logging.getLogger(__name__)
 
 
 # noinspection PyUnusedLocal
-class YandexStationFlowHandler(ConfigFlow, domain=DOMAIN):
-    VERSION = 1
+    def __init__(self):
+        super().__init__()
+        self.cur_step = None
 
     @property
     @lru_cache()
@@ -112,15 +113,42 @@ class YandexStationFlowHandler(ConfigFlow, domain=DOMAIN):
             data_schema=vol.Schema({vol.Required(method): str}),
         )
 
-    async def async_step_qr(self, user_input):
+    async def async_step_qr(self, user_input=None):
+        if user_input is None:
+            # Предотвращаем ошибку при первом заходе
+            return self.async_show_form(
+                step_id="qr",
+                description_placeholders={
+                    "qr_url": await self.yandex.get_qr(),
+                    "ya_url": "https://passport.yandex.ru/profile",
+                },
+            )
+            
         resp = await self.yandex.login_qr()
         if not resp:
-            self.cur_step["errors"] = {"base": "unauthorised"}
-            return self.cur_step
+            return self.async_show_form(
+                step_id="qr",
+                errors={"base": "unauthorised"},
+                description_placeholders={
+                    "qr_url": await self.yandex.get_qr(),
+                    "ya_url": "https://passport.yandex.ru/profile",
+                },
+            )
         return await self._check_yandex_response(resp)
 
-    async def async_step_auth(self, user_input):
+    async def async_step_auth(self, user_input=None):
         """User submited username and password. Or YAML error."""
+        if user_input is None:
+            return self.async_show_form(
+                step_id="auth",
+                data_schema=vol.Schema(
+                    {
+                        vol.Required("username"): str,
+                        vol.Required("password"): str,
+                    }
+                ),
+            )
+
         resp = await self.yandex.login_username(user_input["username"])
         if resp.ok:
             resp = await self.yandex.login_password(user_input["password"])
@@ -150,8 +178,47 @@ class YandexStationFlowHandler(ConfigFlow, domain=DOMAIN):
         return await self._check_yandex_response(resp)
 
     async def async_step_token(self, user_input):
-        resp = await self.yandex.validate_token(user_input["token"])
-        return await self._check_yandex_response(resp)
+        # Показываем форму при первом заходе
+        if user_input is None:
+            return self.async_show_form(
+                step_id="token",
+                data_schema=vol.Schema(
+                    {
+                        vol.Required("token"): str,
+                        vol.Required("token_type", default="x_token"): vol.In(
+                            {"x_token": "x_token (account)", "music_token": "music_token (audio)"}
+                        ),
+                    }
+                ),
+            )
+
+        token = user_input.get("token")
+        token_type = user_input.get("token_type", "x_token")
+
+        # Если пользователь указал music_token — сохраняем его сразу
+        if token_type == "music_token":
+            return self.async_create_entry(title="music_token", data={"music_token": token})
+
+        # Иначе пробуем валидировать x_token
+        resp = await self.yandex.validate_token(token)
+        if resp and resp.ok:
+            # Сохраняем x_token
+            return self.async_create_entry(title=resp.display_login or "yandex", data={"x_token": token})
+
+        # Если валидация не удалась — показываем ошибку на форме
+        errors = {"base": resp.errors[0] if resp and resp.errors else "invalid_token"}
+        return self.async_show_form(
+            step_id="token",
+            data_schema=vol.Schema(
+                {
+                    vol.Required("token"): str,
+                    vol.Required("token_type", default="x_token"): vol.In(
+                        {"x_token": "x_token (account)", "music_token": "music_token (audio)"}
+                    ),
+                }
+            ),
+            errors=errors,
+        )
 
     async def async_step_captcha(self, user_input):
         """User submited captcha. Or YAML error."""
@@ -192,6 +259,9 @@ class YandexStationFlowHandler(ConfigFlow, domain=DOMAIN):
                     title=resp.display_login, data={"x_token": resp.x_token}
                 )
 
+        # Сохраняем последний ответ для отображения ошибок в текущем шаге
+        errors = {"base": resp.errors[0]} if resp.errors else {"base": "unknown_error"}
+
         # Капча
         if resp.error_captcha_required or (resp.errors and any("captcha" in e for e in resp.errors)):
             _LOGGER.debug(f"Captcha required: {resp.errors}")
@@ -199,6 +269,7 @@ class YandexStationFlowHandler(ConfigFlow, domain=DOMAIN):
                 step_id="captcha",
                 data_schema=vol.Schema({vol.Required("captcha_answer"): str}),
                 description_placeholders={"captcha_url": await self.yandex.get_captcha()},
+                errors=errors
             )
 
         # 2FA (код из SMS, приложения, e-mail)
@@ -208,6 +279,7 @@ class YandexStationFlowHandler(ConfigFlow, domain=DOMAIN):
                 step_id="twofa",
                 data_schema=vol.Schema({vol.Required("twofa_code"): str}),
                 description_placeholders={"info": "Введите код из SMS или приложения Яндекс."},
+                errors=errors
             )
 
         # Push-код (подтверждение входа)
@@ -217,17 +289,21 @@ class YandexStationFlowHandler(ConfigFlow, domain=DOMAIN):
                 step_id="push",
                 data_schema=vol.Schema({vol.Required("push_code"): str}),
                 description_placeholders={"info": "Введите код из пуш-уведомления Яндекс."},
+                errors=errors
             )
 
-        # Неизвестная ошибка — показать пользователю текст ошибки
-        if resp.errors:
-            _LOGGER.error(f"Yandex auth error: {resp.errors}")
-            if self.cur_step:
-                # Показываем первую ошибку, если есть
-                self.cur_step["errors"] = {"base": resp.errors[0]}
-                return self.cur_step
-            # Если нет self.cur_step — просто abort с ошибкой
-            raise AbortFlow(f"Yandex error: {resp.errors}")
+        # Неизвестная ошибка — показать форму с ошибкой
+        _LOGGER.error(f"Yandex auth error: {resp.errors}")
+        return self.async_show_form(
+            step_id="auth",
+            data_schema=vol.Schema(
+                {
+                    vol.Required("username"): str,
+                    vol.Required("password"): str,
+                }
+            ),
+            errors=errors
+        )
 
         # Если ничего не подошло — логируем всё
         _LOGGER.error(f"Unknown Yandex response: {resp.raw}")

@@ -627,18 +627,66 @@ class YandexQuasar(Dispatcher):
 
         if relative:
             action["state"]["relative"] = True
-
-        # Сначала пробуем Legacy (через сценарии или напрямую, если поддерживается)
-        # Но для простоты сейчас оставим официальный с обработкой ошибки
+        # Сначала пробуем официальный API
         try:
             official_payload = [{"id": device["id"], "actions": [action]}]
             official_resp = await self._official_action(official_payload)
-            if official_resp.get("status") != "ok":
+            if official_resp.get("status") == "ok":
+                _LOGGER.debug(f"Official action succeeded for {device['id']}: {action}")
+            else:
                 raise Exception(f"Official action failed: {official_resp}")
         except Exception as e:
-            _LOGGER.warning(f"Official action failed ({e}), control via Official API is limited without OAuth scope")
-            # Здесь в идеале должен быть вызов управления через Legacy (сценарии)
-            # но это требует более глубокой переработки. Сейчас просто гасим ошибку 404.
+            _LOGGER.warning(f"Official action failed ({e}), attempting legacy scenario fallback")
+
+            # Fallback: create/update scenario and trigger it via Legacy Quasar API
+            try:
+                device_id = device["id"]
+                name = "ХА " + device_id
+                trigger = encode(device_id)
+
+                # Prepare action as string payload for server_action
+                try:
+                    action_str = json.dumps(action, ensure_ascii=False)
+                except Exception:
+                    action_str = str(action)
+
+                # Ensure scenario exists for device
+                sid = device.get("scenario_id")
+                if not sid:
+                    # create scenario and store id
+                    sid = await self.add_scenario(device_id, trigger)
+                    device["scenario_id"] = sid
+
+                # Update scenario with desired action
+                payload = scenario_speaker_action(name, trigger, device_id, action_str)
+                r = await self.session.put(
+                    f"https://iot.quasar.yandex.ru/m/v4/user/scenarios/{sid}",
+                    json=payload,
+                )
+                try:
+                    resp = await r.json()
+                    if resp.get("status") != "ok":
+                        _LOGGER.warning(f"Legacy scenario update failed: {resp}")
+                    else:
+                        _LOGGER.debug(f"Legacy scenario updated for {device_id}")
+                finally:
+                    r.close()
+
+                # Trigger scenario actions
+                r2 = await self.session.post(
+                    f"https://iot.quasar.yandex.ru/m/user/scenarios/{sid}/actions"
+                )
+                try:
+                    resp2 = await r2.json()
+                    if resp2.get("status") != "ok":
+                        _LOGGER.warning(f"Legacy scenario run failed: {resp2}")
+                    else:
+                        _LOGGER.info(f"Legacy scenario triggered for {device_id}")
+                finally:
+                    r2.close()
+
+            except Exception as e2:
+                _LOGGER.error(f"Legacy fallback failed for {device.get('id')}: {e2}")
 
         await asyncio.sleep(1)
 

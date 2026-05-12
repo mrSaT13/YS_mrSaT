@@ -273,6 +273,90 @@ async def _init_services(hass: HomeAssistant):
     except ImportError as e:
         _LOGGER.warning(repr(e))
 
+    # --- Import cookies service: импорт JSON cookies или строку cookies в session
+    async def import_cookies_service(call: ServiceCall):
+        """Import cookies into session for a given config entry unique_id.
+
+        Params:
+        - unique_id (optional): login/unique id of entry. If omitted and only one entry exists, it will be used.
+        - cookies: string (either JSON export from browser extension or serialized cookies string)
+        """
+        unique_id = call.data.get("unique_id")
+        cookies = call.data.get("cookies")
+        if not cookies:
+            _LOGGER.error("import_cookies: 'cookies' parameter required")
+            return
+
+        # find target quasar
+        entries = list(hass.data[DOMAIN].keys())
+        # skip DATA_CONFIG and DATA_SPEAKERS keys
+        candidates = [k for k in entries if k not in (DATA_CONFIG, DATA_SPEAKERS)]
+        target_key = None
+        if unique_id:
+            target_key = unique_id
+        elif len(candidates) == 1:
+            target_key = candidates[0]
+        else:
+            _LOGGER.error("import_cookies: multiple entries present, please provide 'unique_id'")
+            return
+
+        quasar: YandexQuasar = hass.data[DOMAIN].get(target_key)
+        if not quasar:
+            _LOGGER.error(f"import_cookies: entry {target_key} not found")
+            return
+
+        try:
+            ok_resp = await quasar.session.login_cookies(cookies)
+            _LOGGER.info(f"import_cookies: login_cookies result: {ok_resp.raw if hasattr(ok_resp, 'raw') else ok_resp}")
+        except Exception as e:
+            _LOGGER.error(f"import_cookies failed: {e}")
+
+    hass.services.async_register(DOMAIN, "import_cookies", import_cookies_service)
+
+    # --- Diagnostics service: возвращает базовую информацию о сессии
+    try:
+        from homeassistant.helpers import service as _service_helper
+
+        async def diagnostics_service(call: ServiceCall) -> ServiceResponse:
+            unique_id = call.data.get("unique_id")
+            entries = list(hass.data[DOMAIN].keys())
+            candidates = [k for k in entries if k not in (DATA_CONFIG, DATA_SPEAKERS)]
+            target_key = None
+            if unique_id:
+                target_key = unique_id
+            elif len(candidates) == 1:
+                target_key = candidates[0]
+            else:
+                return {"error": "multiple_entries, provide unique_id"}
+
+            quasar: YandexQuasar = hass.data[DOMAIN].get(target_key)
+            if not quasar:
+                return {"error": "entry_not_found"}
+
+            diag = await quasar.session.diagnostics()
+            _LOGGER.info(f"yandex_station.diagnostics for {target_key}: {diag}")
+            return diag
+
+        hass.services.async_register(DOMAIN, "diagnostics", diagnostics_service, supports_response=SupportsResponse.OPTIONAL)
+    except Exception:
+        # fallback simple registration
+        async def diagnostics_service_simple(call: ServiceCall):
+            unique_id = call.data.get("unique_id")
+            entries = list(hass.data[DOMAIN].keys())
+            candidates = [k for k in entries if k not in (DATA_CONFIG, DATA_SPEAKERS)]
+            target_key = unique_id if unique_id else (candidates[0] if len(candidates) == 1 else None)
+            if not target_key:
+                _LOGGER.error("diagnostics: multiple entries present, please provide 'unique_id'")
+                return
+            quasar: YandexQuasar = hass.data[DOMAIN].get(target_key)
+            if not quasar:
+                _LOGGER.error(f"diagnostics: entry {target_key} not found")
+                return
+            diag = await quasar.session.diagnostics()
+            _LOGGER.info(f"yandex_station.diagnostics for {target_key}: {diag}")
+
+        hass.services.async_register(DOMAIN, "diagnostics", diagnostics_service_simple)
+
     async def yandex_station_say(call: ServiceCall):
         entity_ids = call.data.get(ATTR_ENTITY_ID) or utils.find_station(
             speakers.values()

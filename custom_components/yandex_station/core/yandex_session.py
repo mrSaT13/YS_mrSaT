@@ -200,20 +200,32 @@ class YandexSession(BasicSession):
             if r.status != 200 or "<title>400" in resp:
                 raise Exception(f"Yandex passport returned {r.status}")
         
-        m = re.search(r'"csrf_token" value="([^"]+)"', resp)
-        if not m:
-            m = re.search(r'window\.__CSRF__\s*=\s*"([^"]+)"', resp)
-        
-        if not m:
-            raise Exception("CSRF token not found")
-            
-        return m[1]
+        music = getattr(self.session, "music_token", None)
+        x_token = getattr(self.session, "x_token", None)
 
-    async def login_username(self, username: str) -> LoginResponse:
-        """Create login session."""
-        try:
-            csrf_token = await self._get_csrf_token()
-        except Exception as e:
+        _LOGGER.debug(f"[{self.name}] glagol token request: music_token={bool(music)}, x_token={bool(x_token)}")
+
+        # Если нет music_token, попробуем получить его из x_token перед запросом
+        if not music and x_token:
+            try:
+                _LOGGER.debug(f"[{self.name}] Attempting to fetch music_token via x_token")
+                music_candidate = await self.get_music_token(x_token)
+                if music_candidate:
+                    music = music_candidate
+                    self.music_token = music_candidate
+                    _LOGGER.info(f"[{self.name}] Obtained music_token via x_token")
+            except Exception as e:
+                _LOGGER.debug(f"[{self.name}] Failed to obtain music_token: {e}")
+
+        if music:
+            headers["Authorization"] = f"OAuth {music}"
+            _LOGGER.debug(f"[{self.name}] Using music_token for glagol")
+        elif x_token:
+            headers["Authorization"] = f"OAuth {x_token}"
+            _LOGGER.debug(f"[{self.name}] Using x_token for glagol (music_token not available)")
+        else:
+            _LOGGER.error(f"[{self.name}] No tokens available for glagol!")
+            raise Exception("No tokens for glagol/token")
             return LoginResponse({"errors": [str(e)]})
 
         self.auth_payload = {"csrf_token": csrf_token}
@@ -228,45 +240,68 @@ class YandexSession(BasicSession):
         try:
             resp = await self._post_json(
                 "https://passport.yandex.ru/pwl-yandex/api/passport/auth/multistep_start",
-                headers=headers,
-                data={"login": username},
-            )
-        except Exception as e:
-            return LoginResponse({"errors": [f"Network error: {str(e)}"]})
+                # Выполним запрос с ретраем: при 403 сначала попробуем обновить cookies (refresh_cookies)
+                r = None
+                retries = 1
+                while True:
+                    try:
+                        r = await self.session.get(
+                            "https://quasar.yandex.net/glagol/token", params=payload, headers=headers
+                        )
+                    except Exception as e:
+                        _LOGGER.error(f"[{self.name}] Glagol token request failed: {e}")
+                        return None
 
-        if resp.get("status") != "ok":
-            return LoginResponse(resp)
-        if resp.get("can_register") is True:
-            return LoginResponse({"errors": ["account.not_found"]})
+                    try:
+                        status = getattr(r, "status", None)
+                        _LOGGER.debug(f"[{self.name}] Glagol response status: {status}")
 
-        self.auth_payload["track_id"] = resp["track_id"]
-        return LoginResponse(resp)
+                        if status == 403:
+                            # log body for diagnosis
+                            try:
+                                body = await r.text()
+                                _LOGGER.debug(f"[{self.name}] Glagol 403 body: {body[:1000]}")
+                            except Exception:
+                                pass
 
-    async def login_password(self, password: str) -> LoginResponse:
-        """Login using password."""
-        if not self.auth_payload:
-            return LoginResponse({"errors": ["auth.no_session"]})
+                            # Попробуем обновить cookies и повторить один раз
+                            if retries > 0:
+                                _LOGGER.info(f"[{self.name}] Received 403, attempting refresh_cookies() and retry")
+                                try:
+                                    await self.refresh_cookies()
+                                except Exception as e:
+                                    _LOGGER.debug(f"[{self.name}] refresh_cookies failed: {e}")
+                                retries -= 1
+                                r.close()
+                                continue
 
-        headers = {
-            "X-CSRF-Token": self.auth_payload["csrf_token"],
-            "Origin": "https://passport.yandex.ru",
-            "Referer": "https://passport.yandex.ru/am?app_platform=android",
-            "User-Agent": DEFAULT_UA
-        }
+                            # окончательный 403 — ставим cooldown
+                            try:
+                                if hasattr(self.session, "_forbidden_cooldowns"):
+                                    self.session._forbidden_cooldowns[host] = time.time() + 300
+                                    _LOGGER.warning(f"[{self.name}] Set 403 cooldown for {host} (300s)")
+                            except Exception:
+                                pass
+                            _LOGGER.warning(f"[{self.name}] Glagol token returned 403; giving up and respecting cooldown")
+                            return None
 
-        try:
-            resp = await self._post_json(
-                "https://passport.yandex.ru/pwl-yandex/api/passport/auth/password/submit",
-                headers=headers,
-                data={
-                    "track_id": self.auth_payload["track_id"],
-                    "password": password,
-                    "retpath": "https://passport.yandex.ru/am/finish?status=ok&from=Login",
-                },
-            )
-        except Exception as e:
-            return LoginResponse({"errors": [f"Network error: {str(e)}"]})
+                        # читаем тело и парсим
+                        resp_text = await r.text()
+                        try:
+                            resp = json.loads(resp_text)
+                        except Exception:
+                            _LOGGER.error(f"[{self.name}] Failed to parse glagol token response: {resp_text[:400]}")
+                            return None
 
+                        _LOGGER.debug(f"[{self.name}] Glagol response status: {resp.get('status')}")
+                        if resp.get("status") != "ok":
+                            _LOGGER.warning(f"[{self.name}] Glagol token response not ok: {resp}")
+                            return None
+
+                        return resp.get("token")
+                    finally:
+                        if r:
+                            r.close()
         if resp.get("status") != "ok":
             return LoginResponse(resp)
 
@@ -574,6 +609,21 @@ class YandexSession(BasicSession):
         if self.x_token:
             return await self.login_token(self.x_token)
         return False
+
+    async def diagnostics(self) -> dict:
+        """Return diagnostic info useful for debugging auth issues."""
+        try:
+            cookie_keys = [c.key for c in self._session.cookie_jar]
+        except Exception:
+            cookie_keys = []
+        has_session_id = any(k.lower() in ("session_id", "sessionid", "sessar") for k in cookie_keys)
+        return {
+            "has_x_token": bool(self.x_token),
+            "has_music_token": bool(self.music_token),
+            "cookie_keys": cookie_keys,
+            "has_session_id": has_session_id,
+            "forbidden_cooldowns": self._forbidden_cooldowns,
+        }
 
     async def get_music_token(self, x_token: str):
         """Get music token."""
