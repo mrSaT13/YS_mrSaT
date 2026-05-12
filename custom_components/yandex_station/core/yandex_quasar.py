@@ -276,6 +276,28 @@ class YandexQuasar(Dispatcher):
         finally:
             r.close()
 
+    async def _legacy_list_devices(self) -> list[dict]:
+        """Fallback: list devices via internal quasar API (includes quasar_info)."""
+        r = await self.session.get(
+            "https://iot.quasar.yandex.ru/m/v3/user/devices",
+            timeout=aiohttp.ClientTimeout(total=30, sock_connect=10, sock_read=20),
+            ssl=self._get_ssl_context(),
+        )
+        try:
+            raw = await asyncio.wait_for(r.read(), timeout=20)
+            resp = json.loads(raw.decode("utf-8", errors="replace"))
+            assert resp.get("status") == "ok", resp
+        finally:
+            r.close()
+
+        devices: list[dict] = []
+        for house in resp.get("households", []):
+            if "sharing_info" in house:
+                continue
+            for device in house.get("all", house.get("devices", [])):
+                devices.append(device)
+        return devices
+
     async def _official_query_devices(self, device_ids: list[str]) -> list[dict]:
         if not device_ids:
             return []
@@ -341,12 +363,22 @@ class YandexQuasar(Dispatcher):
         _LOGGER.debug(f"x_token length: {len(self.session.x_token or '')}")
 
         try:
-            _LOGGER.info("📡 Fetching devices via official API v1.0...")
-            listed = await self._official_list_devices()
-            queried = await self._official_query_devices(
-                [d["id"] for d in listed if d.get("id")]
-            )
-            self._merge_official_devices(listed, queried, dispatch=False)
+            try:
+                _LOGGER.info("📡 Fetching devices via official API v1.0...")
+                listed = await self._official_list_devices()
+                queried = await self._official_query_devices(
+                    [d["id"] for d in listed if d.get("id")]
+                )
+                self._merge_official_devices(listed, queried, dispatch=False)
+                _LOGGER.info("✅ Official API v1.0 succeeded")
+            except Exception as official_err:
+                _LOGGER.warning(
+                    f"⚠️ Official API failed ({official_err}), "
+                    "falling back to legacy quasar API..."
+                )
+                listed = await self._legacy_list_devices()
+                self._merge_official_devices(listed, [], dispatch=False)
+                _LOGGER.info("✅ Legacy quasar API succeeded")
 
             _LOGGER.info(f"✅ Total devices loaded: {len(self.devices)}")
 
@@ -677,18 +709,28 @@ class YandexQuasar(Dispatcher):
             device["online"] = state == "online"
 
     async def connect(self):
-        listed = await self._official_list_devices()
-        queried = await self._official_query_devices(
-            [d["id"] for d in listed if d.get("id")]
-        )
-        self._merge_official_devices(listed, queried, dispatch=True)
-
-    async def devices_passive_update(self, *args):
         try:
             listed = await self._official_list_devices()
             queried = await self._official_query_devices(
                 [d["id"] for d in listed if d.get("id")]
             )
+        except Exception as e:
+            _LOGGER.warning(f"Official API unavailable in connect ({e}), using legacy")
+            listed = await self._legacy_list_devices()
+            queried = []
+        self._merge_official_devices(listed, queried, dispatch=True)
+
+    async def devices_passive_update(self, *args):
+        try:
+            try:
+                listed = await self._official_list_devices()
+                queried = await self._official_query_devices(
+                    [d["id"] for d in listed if d.get("id")]
+                )
+            except Exception as e:
+                _LOGGER.debug(f"Official API in passive update ({e}), using legacy")
+                listed = await self._legacy_list_devices()
+                queried = []
             self._merge_official_devices(listed, queried, dispatch=True)
         except Exception as e:
             _LOGGER.debug(f"Devices forceupdate problem: {repr(e)}")
