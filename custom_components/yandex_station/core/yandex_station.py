@@ -195,7 +195,12 @@ class YandexStationBase(MediaBrowser, RestoreEntity):
         self._attr_device_info = info = DeviceInfo(
             identifiers={(DOMAIN, self.unique_id)},
             name=self.device["name"],
+            suggested_area=self.device.get("room_name"),
         )
+        if self.device.get("house_name"):
+            # По умолчанию Home Assistant берет name, но мы можем добавить 
+            # доп инфо для логов или кастомных атрибутов
+            pass
         if custom := QUASAR_INFO.get(self.device_platform):
             info["manufacturer"] = custom[1]
             info["model"] = custom[2]

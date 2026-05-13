@@ -297,22 +297,57 @@ class YandexStationConfigFlow(ConfigFlow, domain=DOMAIN):
         resp = await self.yandex.login_password(user_input["password"])
         return await self._check_yandex_response(resp)
 
+    async def async_step_twofa(self, user_input):
+        """Handle 2FA code submission."""
+        if user_input is None:
+            return self.async_show_form(
+                step_id="twofa",
+                data_schema=vol.Schema({vol.Required("twofa_code"): str}),
+            )
+        
+        resp = await self.yandex.login_2fa(user_input["twofa_code"])
+        return await self._check_yandex_response(resp)
+
+    async def async_step_push(self, user_input):
+        """Handle Push code submission."""
+        if user_input is None:
+            return self.async_show_form(
+                step_id="push",
+                data_schema=vol.Schema({vol.Required("push_code"): str}),
+            )
+        
+        resp = await self.yandex.login_2fa(user_input["push_code"])
+        return await self._check_yandex_response(resp)
+
+    async def _handle_entry_creation(self, resp: LoginResponse):
+        """Handle the successful auth and fetch extra home/device info."""
+        # Перед созданием записи, попробуем собрать инфо о доме
+        try:
+            quasar = YandexQuasar(self.yandex)
+            await quasar.init()
+            # Можно добавить сбор инфо о доме в title или логи
+            _LOGGER.info(f"Devices found: {len(quasar.devices)}")
+        except Exception as e:
+            _LOGGER.warning(f"Failed to fetch home info during auth: {e}")
+
+        # set unique_id or return existing entry
+        entry = await self.async_set_unique_id(resp.display_login)
+        if entry:
+            # update existing entry with same login
+            self.hass.config_entries.async_update_entry(
+                entry, data={"x_token": resp.x_token}
+            )
+            return self.async_abort(reason="account_updated")
+        else:
+            # create new entry for new login
+            return self.async_create_entry(
+                title=resp.display_login, data={"x_token": resp.x_token}
+            )
+
     async def _check_yandex_response(self, resp: LoginResponse):
         """Check Yandex response. Handle captcha, 2FA, push, and log errors."""
         if resp.ok:
-            # set unique_id or return existing entry
-            entry = await self.async_set_unique_id(resp.display_login)
-            if entry:
-                # update existing entry with same login
-                self.hass.config_entries.async_update_entry(
-                    entry, data={"x_token": resp.x_token}
-                )
-                return self.async_abort(reason="account_updated")
-            else:
-                # create new entry for new login
-                return self.async_create_entry(
-                    title=resp.display_login, data={"x_token": resp.x_token}
-                )
+            return await self._handle_entry_creation(resp)
 
         # Сохраняем последний ответ для отображения ошибок в текущем шаге
         errors = {"base": resp.errors[0]} if resp.errors else {"base": "unknown_error"}
@@ -328,7 +363,7 @@ class YandexStationConfigFlow(ConfigFlow, domain=DOMAIN):
             )
 
         # 2FA (код из SMS, приложения, e-mail)
-        if resp.errors and any(e in ("need_2fa", "2fa.required", "twofa.required") for e in resp.errors):
+        if resp.errors and any(e in ("need_2fa", "2fa.required", "twofa.required", "challenge_required") for e in resp.errors):
             _LOGGER.debug(f"2FA required: {resp.errors}")
             return self.async_show_form(
                 step_id="twofa",

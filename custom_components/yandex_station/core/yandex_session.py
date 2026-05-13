@@ -219,104 +219,112 @@ class YandexSession(BasicSession):
     def add_update_listener(self, coro):
         self._update_listeners.append(coro)
 
-    async def _get_csrf_token(self):
-        """Get CSRF token."""
+    async def login_username(self, username: str) -> LoginResponse:
+        """First step of login: enter username."""
+        # Очищаем сессию перед новым входом
+        self._session.cookie_jar.clear()
+        self.auth_payload = None
+        self.csrf_token = None
+
         headers = {"User-Agent": DEFAULT_UA}
-        async with self._get("https://passport.yandex.ru/am?app_platform=android", headers=headers) as r:
-            resp = await r.text()
+        try:
+            async with self._get("https://passport.yandex.ru/am?app_platform=android", headers=headers) as r:
+                text = await r.text()
+                # Извлекаем CSRF
+                m = re.search(r'name="csrf_token" value="([^"]+)"', text)
+                csrf = m.group(1) if m else None
+                if not csrf:
+                    m = re.search(r'csrf_token["\':\s]+"?([0-9a-fA-F-]+)"?', text)
+                    csrf = m.group(1) if m else None
+                
+                if not csrf:
+                    _LOGGER.error("CSRF not found in passport init")
+                    return LoginResponse({"errors": ["csrf_not_found"]})
+                
+                self.csrf_token = csrf
+                self.auth_payload = {"csrf_token": csrf, "login": username}
+
+            resp = await self._post_json(
+                "https://passport.yandex.ru/pwl-yandex/api/passport/auth/multistep_start",
+                data=self.auth_payload,
+                headers={"User-Agent": DEFAULT_UA, "X-CSRF-Token": csrf}
+            )
             
-            if r.status != 200 or "<title>400" in resp:
-                raise Exception(f"Yandex passport returned {r.status}")
-        
-        music = getattr(self.session, "music_token", None)
-        x_token = getattr(self.session, "x_token", None)
-
-        _LOGGER.debug(f"[{self.name}] glagol token request: music_token={bool(music)}, x_token={bool(x_token)}")
-
-        # Если нет music_token, попробуем получить его из x_token перед запросом
-        if not music and x_token:
-            try:
-                _LOGGER.debug(f"[{self.name}] Attempting to fetch music_token via x_token")
-                music_candidate = await self.get_music_token(x_token)
-                if music_candidate:
-                    music = music_candidate
-                    self.music_token = music_candidate
-                    _LOGGER.info(f"[{self.name}] Obtained music_token via x_token")
-            except Exception as e:
-                _LOGGER.debug(f"[{self.name}] Failed to obtain music_token: {e}")
-
-        if music:
-            headers["Authorization"] = f"OAuth {music}"
-            _LOGGER.debug(f"[{self.name}] Using music_token for glagol")
-        elif x_token:
-            headers["Authorization"] = f"OAuth {x_token}"
-            _LOGGER.debug(f"[{self.name}] Using x_token for glagol (music_token not available)")
-        else:
-            _LOGGER.error(f"[{self.name}] No tokens available for glagol!")
-            raise Exception("No tokens for glagol/token")
+            if resp.get("status") == "ok":
+                # Сохраняем tracks/state для следующих шагов
+                self.auth_payload.update({
+                    "track_id": resp.get("track_id"),
+                })
+            
+            return LoginResponse(resp)
+        except Exception as e:
+            _LOGGER.exception("login_username error")
             return LoginResponse({"errors": [str(e)]})
 
-        # Попытка извлечь CSRF-токен из HTML страницы
-        csrf_token = None
-        try:
-            m = re.search(r'name="csrf_token" value="([^"]+)"', resp)
-            if m:
-                csrf_token = m.group(1)
-            else:
-                m2 = re.search(r'csrf_token["\':\s]+"?([0-9a-fA-F-]+)"?', resp)
-                if m2:
-                    csrf_token = m2.group(1)
-        except Exception:
-            csrf_token = None
-
-        if not csrf_token:
-            _LOGGER.warning("CSRF token not found in passport page")
-            raise Exception("CSRF token not found")
-
-        self.auth_payload = {"csrf_token": csrf_token}
+    async def login_password(self, password: str) -> LoginResponse:
+        """Second step: enter password."""
+        if not self.auth_payload or not self.auth_payload.get("track_id"):
+            return LoginResponse({"errors": ["session_expired"]})
 
         headers = {
-            "X-CSRF-Token": csrf_token,
-            "Origin": "https://passport.yandex.ru",
-            "Referer": "https://passport.yandex.ru/am?app_platform=android",
             "User-Agent": DEFAULT_UA,
+            "X-CSRF-Token": self.csrf_token,
+        }
+        
+        data = {
+            "csrf_token": self.csrf_token,
+            "track_id": self.auth_payload["track_id"],
+            "password": password,
+            "retpath": "https://passport.yandex.ru/am/finish"
         }
 
         try:
-            # Выполняем старт многошаговой авторизации (multistep_start)
             resp = await self._post_json(
-                "https://passport.yandex.ru/pwl-yandex/api/passport/auth/multistep_start",
-                json=self.auth_payload,
-                headers={"User-Agent": DEFAULT_UA},
+                "https://passport.yandex.ru/pwl-yandex/api/passport/auth/password/submit",
+                data=data,
+                headers=headers
             )
-        except Exception as e:
-            _LOGGER.error(f"multistep_start request failed: {e}")
-            return LoginResponse({"errors": [str(e)]})
-        if resp.get("status") != "ok":
+            
+            if resp.get("status") == "ok":
+                # Если успех — пробуем забрать куки
+                return await self.login_cookies()
+            
             return LoginResponse(resp)
+        except Exception as e:
+            _LOGGER.exception("login_password error")
+            return LoginResponse({"errors": [str(e)]})
 
-        # После успешного логина по паролю — получаем x_token через cookies-flow
-        login_cookies_resp = None
-        if "redirect_url" in resp:
-            if "/am/finish" in resp["redirect_url"]:
-                login_cookies_resp = await self.login_cookies()
-            else:
-                async with self._get(resp["redirect_url"]) as r:
-                    await r.text()
-                login_cookies_resp = await self.login_cookies()
-        else:
-            login_cookies_resp = await self.login_cookies()
+    async def login_2fa(self, code: str) -> LoginResponse:
+        """Step for 2FA/SMS/App code."""
+        if not self.auth_payload or not self.auth_payload.get("track_id"):
+            return LoginResponse({"errors": ["session_expired"]})
 
-        # После получения x_token обязательно обновляем cookies через login_token
-        login_token_ok = False
-        if self.x_token:
-            try:
-                login_token_ok = await self.login_token(self.x_token)
-                _LOGGER.info(f"login_token после логин/пароль: {'успешно' if login_token_ok else 'не удалось'}")
-            except Exception as e:
-                _LOGGER.warning(f"Ошибка login_token после логин/пароль: {e}")
+        headers = {
+            "User-Agent": DEFAULT_UA,
+            "X-CSRF-Token": self.csrf_token,
+        }
+        
+        data = {
+            "csrf_token": self.csrf_token,
+            "track_id": self.auth_payload["track_id"],
+            "code": code,
+        }
 
-        return login_cookies_resp
+        try:
+            # Пытаемся отправить код (универсальный endpoint для 2FA)
+            resp = await self._post_json(
+                "https://passport.yandex.ru/pwl-yandex/api/passport/auth/challenge/submit",
+                data=data,
+                headers=headers
+            )
+            
+            if resp.get("status") == "ok":
+                return await self.login_cookies()
+            
+            return LoginResponse(resp)
+        except Exception as e:
+            _LOGGER.exception("login_2fa error")
+            return LoginResponse({"errors": [str(e)]})
 
     async def get_qr(self) -> str:
         """Get link to QR-code auth."""
