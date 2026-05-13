@@ -24,7 +24,6 @@ from homeassistant.helpers.template import Template
 from yarl import URL
 
 from . import protobuf, stream
-from .yandex_quasar import _safe_response_json
 from .const import CONF_MEDIA_PLAYERS, DATA_CONFIG, DOMAIN
 from .yandex_session import YandexSession
 
@@ -231,7 +230,7 @@ async def get_media_payload(session: YandexSession, media_id: str) -> dict | Non
                         "https://ott-widget.kinopoisk.ru/ott/api/kp-film-status/",
                         params={"kpFilmId": m[1]},
                     )
-                    resp = await _safe_response_json(r)
+                    resp = await r.json()
                     return play_video_by_descriptor("kinopoisk", resp["uuid"])
 
                 except:
@@ -243,7 +242,7 @@ async def get_media_payload(session: YandexSession, media_id: str) -> dict | Non
                         "https://api-gateway-rest.bookmate.yandex.net/audiobook/album",
                         json={"audiobook_uuid": m[1]},
                     )
-                    resp = await _safe_response_json(r)
+                    resp = await r.json()
                     return {
                         "command": "playMusic",
                         "type": "album",
@@ -372,7 +371,7 @@ async def get_playlist_uid(
         r = await session.get(
             f"https://api.music.yandex.net/users/{username}/playlists/{playlist_id}",
         )
-        resp = await _safe_response_json(r)
+        resp = await r.json()
         return resp["result"]["owner"]["uid"]
     except:
         return None

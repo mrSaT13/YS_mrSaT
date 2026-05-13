@@ -8,7 +8,6 @@ from asyncio import Future
 from typing import Callable, Dict, Optional
 
 from aiohttp import ClientConnectorError, ClientWebSocketResponse, ServerTimeoutError
-from urllib.parse import urlparse
 from zeroconf import ServiceBrowser, ServiceStateChange, Zeroconf
 
 from .yandex_session import YandexSession
@@ -54,84 +53,14 @@ class YandexGlagol:
             "device_id": self.device["quasar_info"]["device_id"],
             "platform": self.device["quasar_info"]["platform"],
         }
+        r = await self.session.get(
+            "https://quasar.yandex.net/glagol/token", params=payload
+        )
+        # @dext0r: fix bug with wrong content-type
+        resp = json.loads(await r.text())
+        assert resp["status"] == "ok", resp
 
-        music = getattr(self.session, "music_token", None)
-        x_token = getattr(self.session, "x_token", None)
-        
-        _LOGGER.debug(f"[{self.name}] Glagol token request: music_token={bool(music)}, x_token={bool(x_token)}")
-
-        # Try first without Authorization (cookies only)
-        r = None
-        try:
-            _LOGGER.debug(f"[{self.name}] Attempt 1: glagol/token without Authorization (cookies)")
-            r = await self.session.get("https://quasar.yandex.net/glagol/token", params=payload, timeout=10)
-            resp_text = await r.text()
-            resp = json.loads(resp_text)
-            
-            if resp.get("status") == "ok":
-                _LOGGER.debug(f"[{self.name}] Success with cookies")
-                return resp["token"]
-            else:
-                _LOGGER.debug(f"[{self.name}] Cookies failed: {resp.get('status')}")
-        except Exception as e:
-            _LOGGER.debug(f"[{self.name}] Attempt 1 error: {e}")
-        finally:
-            if r:
-                try:
-                    r.close()
-                except Exception:
-                    pass
-
-        # Try with music_token
-        if music:
-            r = None
-            try:
-                _LOGGER.debug(f"[{self.name}] Attempt 2: glagol/token with music_token")
-                headers = {"Authorization": f"OAuth {music}"}
-                r = await self.session.get("https://quasar.yandex.net/glagol/token", params=payload, headers=headers, timeout=10)
-                resp_text = await r.text()
-                resp = json.loads(resp_text)
-                
-                if resp.get("status") == "ok":
-                    _LOGGER.debug(f"[{self.name}] Success with music_token")
-                    return resp["token"]
-                else:
-                    _LOGGER.warning(f"[{self.name}] music_token failed: {resp.get('status')}")
-            except Exception as e:
-                _LOGGER.debug(f"[{self.name}] Attempt 2 error: {e}")
-            finally:
-                if r:
-                    try:
-                        r.close()
-                    except Exception:
-                        pass
-
-        # Try with x_token
-        if x_token:
-            r = None
-            try:
-                _LOGGER.debug(f"[{self.name}] Attempt 3: glagol/token with x_token")
-                headers = {"Authorization": f"OAuth {x_token}"}
-                r = await self.session.get("https://quasar.yandex.net/glagol/token", params=payload, headers=headers, timeout=10)
-                resp_text = await r.text()
-                resp = json.loads(resp_text)
-                
-                if resp.get("status") == "ok":
-                    _LOGGER.debug(f"[{self.name}] Success with x_token")
-                    return resp["token"]
-                else:
-                    _LOGGER.warning(f"[{self.name}] x_token failed: {resp.get('status')}")
-            except Exception as e:
-                _LOGGER.debug(f"[{self.name}] Attempt 3 error: {e}")
-            finally:
-                if r:
-                    try:
-                        r.close()
-                    except Exception:
-                        pass
-
-        _LOGGER.error(f"[{self.name}] All attempts to get glagol token failed")
-        return None
+        return resp["token"]
 
     async def start_or_restart(self):
         # first time
@@ -161,17 +90,6 @@ class YandexGlagol:
         try:
             if not self.device_token:
                 self.device_token = await self.get_device_token()
-
-            # If token is not available, postpone local connect with exponential backoff
-            if not self.device_token:
-                self.debug("Device token not available — postponing local connect")
-                # return to cloud mode and schedule retry
-                self.update_handler(None)
-                delay = min(30 * (2 ** (fails - 1)), 300)  # exponential backoff: 30s, 60s, 120s, 240s, 300s (cap)
-                self.debug(f"Таймаут до следующей попытки получения токена {delay}s (fails={fails})")
-                await asyncio.sleep(delay)
-                _ = asyncio.create_task(self._connect(fails))
-                return
 
             self.ws = await self.session.ws_connect(self.url, heartbeat=55, ssl=False)
             await self.ping(command="softwareVersion")
@@ -277,10 +195,6 @@ class YandexGlagol:
 
     async def send(self, payload: dict) -> Optional[dict]:
         _LOGGER.debug(f"{self.name} => local | {payload}")
-
-        if not self.ws or self.ws.closed:
-            _LOGGER.warning(f"{self.name} => local | Cannot send: connection is closed or not initialized")
-            return {"error": "Connection closed"}
 
         request_id = str(uuid.uuid4())
 
