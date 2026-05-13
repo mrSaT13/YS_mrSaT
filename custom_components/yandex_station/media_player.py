@@ -20,7 +20,7 @@ from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.restore_state import ExtraStoredData, RestoreEntity, RestoredExtraData
 from homeassistant.helpers.template import Template
 from homeassistant.util import slugify
-from . import stream, utils
+from .core import stream, utils
 from .core.const import DATA_CONFIG, DOMAIN
 from .core.quasar_info import QUASAR_INFO
 from .core.yandex_glagol import YandexGlagol
