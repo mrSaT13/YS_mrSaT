@@ -1,8 +1,9 @@
 {
   "domain": "yandex_station",
-  "name": "Yandex.Station",
+  "name": "Yandex.Station(Fork)",
   "codeowners": [
-    "@AlexxIT"
+    "@AlexxIT",
+	"@mrSaT13"
   ],
   "config_flow": true,
   "dependencies": [

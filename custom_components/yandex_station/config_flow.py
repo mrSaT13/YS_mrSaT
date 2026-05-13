@@ -82,6 +82,7 @@ class YandexStationFlowHandler(ConfigFlow, domain=DOMAIN):
                 description_placeholders={
                     "qr_url": qr_url,
                     "qr_data": generate_qr_code(qr_url),
+                    "ya_url": "https://passport.yandex.ru/profile",
                 },
             )
 
