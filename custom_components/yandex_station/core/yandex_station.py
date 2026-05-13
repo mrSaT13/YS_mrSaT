@@ -690,7 +690,12 @@ class YandexStationBase(MediaBrowser, RestoreEntity):
             # на Яндекс ТВ Станция (2023) громкость от 0 до 100
             # на колонках - от 0 до 10
             k = 100 if self.device_platform in ["magritte", "monet"] else 10
-            await self.quasar.send(self.device, f"громкость на {round(k * volume)}")
+            # Prefer device action API for volume to avoid restarting stream
+            try:
+                await self.quasar.device_action(self.device, "volume", int(round(k * volume)))
+            except Exception:
+                # Fallback to sending voice command if device_action unsupported
+                await self.quasar.send(self.device, f"громкость на {round(k * volume)}")
             if volume > 0:
                 self._attr_is_volume_muted = False
                 self._attr_volume_level = round(volume, 2)

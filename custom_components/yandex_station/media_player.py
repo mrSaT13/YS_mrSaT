@@ -117,13 +117,13 @@ class YandexMediaPlayer(MediaPlayerEntity, YandexEntity):
         await self.device_actions(on=False)
 
     async def async_volume_up(self):
-        await self.device_actions(volume=1)
+        await self.device_action("volume", 1, relative=True)
 
     async def async_volume_down(self):
-        await self.device_actions(volume=-1)
+        await self.device_action("volume", -1, relative=True)
 
     async def async_mute_volume(self, mute):
-        await self.device_actions(mute=mute)
+        await self.device_action("mute", bool(mute))
 
     async def async_media_next_track(self):
         await self.device_actions(channel=1)

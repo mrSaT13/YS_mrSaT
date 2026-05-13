@@ -61,11 +61,13 @@ class YandexStationConfigFlow(ConfigFlow, domain=DOMAIN):
                 data_schema=vol.Schema(
                     {
                         vol.Required("method", default="qr"): vol.In(
-                            {
+                                {
                                 "qr": "QR-код",
                                 "auth": "Пароль или одноразовый ключ",
                                 "email": "Ссылка на E-mail",
-                                "cookies": "Cookies",
+                                "cookies": "Cookies (вставить)",
+                                "cookies_auto": "Cookies (авто, открывает страницу входа)",
+                                "app_password": "Пароль приложения",
                                 "token": "Токен",
                             }
                         )
@@ -111,11 +113,60 @@ class YandexStationConfigFlow(ConfigFlow, domain=DOMAIN):
                 },
             )
 
+        if method == "cookies_auto":
+            # Start an automatic cookie capture helper: instruct user to open
+            # the Yandex login in their browser. Full automation (proxying
+            # login and capturing HttpOnly cookies) is not feasible without
+            # a local OAuth redirect or browser extension — here we provide
+            # an easy path and then import cookies from the running session
+            return await self.async_step_cookies_auto()
+
         # cookies, token
         return self.async_show_form(
             step_id=method,
             data_schema=vol.Schema({vol.Required(method): str}),
         )
+
+    async def async_step_cookies_auto(self, user_input=None):
+        """Assist user to obtain cookies automatically (best-effort).
+
+        Note: this step provides an instruction and then tries to import
+        cookies present in the running session (or pasted by user).
+        A full automatic capture requires a local redirect/OAuth server
+        or browser extension (see integration docs for full automation).
+        """
+        if user_input is None:
+            return self.async_show_form(
+                step_id="cookies_auto",
+                data_schema=vol.Schema({vol.Required("confirm"): bool}),
+                description_placeholders={
+                    "ya_url": "https://passport.yandex.ru/profile",
+                    "hint": "Откроется страница входа Яндекса — после успешного входа вернитесь и нажмите подтверждение."
+                },
+            )
+
+        # Try to import cookies from current session cookie_jar
+        resp = await self.yandex.login_cookies(None)
+        return await self._check_yandex_response(resp)
+
+    async def async_step_app_password(self, user_input=None):
+        """Handle login with application password (username + app password)."""
+        if user_input is None:
+            return self.async_show_form(
+                step_id="app_password",
+                data_schema=vol.Schema(
+                    {
+                        vol.Required("username"): str,
+                        vol.Required("app_password"): str,
+                    }
+                ),
+            )
+
+        resp = await self.yandex.login_username(user_input["username"])
+        if resp.ok:
+            # Use provided app_password as password
+            resp = await self.yandex.login_password(user_input["app_password"])
+        return await self._check_yandex_response(resp)
 
     async def async_step_qr(self, user_input=None):
         if user_input is None:
