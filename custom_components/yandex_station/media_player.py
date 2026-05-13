@@ -378,17 +378,35 @@ class YandexStationBase(MediaBrowser, RestoreEntity):
         if self.local_state: await self.glagol.send({"command": "rewind", "position": position})
     async def async_media_play(self):
         if self.local_state: await self.glagol.send({"command": "play"})
-        else: await self.quasar.send(self.device, "продолжить"); self._attr_state = MediaPlayerState.PLAYING; self.async_write_ha_state()
+        else:
+            resp = await self.quasar.send(self.device, "продолжить")
+            if resp and resp.get("status") == "ok":
+                self._attr_state = MediaPlayerState.PLAYING
+                self.async_write_ha_state()
+            else:
+                _LOGGER.error(f"Failed to play: {resp}")
     async def async_media_pause(self):
         if self.local_state: await self.glagol.send({"command": "stop"})
-        else: await self.quasar.send(self.device, "пауза"); self._attr_state = MediaPlayerState.PAUSED; self.async_write_ha_state()
+        else:
+            resp = await self.quasar.send(self.device, "пауза")
+            if resp and resp.get("status") == "ok":
+                self._attr_state = MediaPlayerState.PAUSED
+                self.async_write_ha_state()
+            else:
+                _LOGGER.error(f"Failed to pause: {resp}")
     async def async_media_stop(self): await self.async_media_pause()
     async def async_media_previous_track(self):
         if self.local_state: await self.glagol.send({"command": "prev"})
-        else: await self.quasar.send(self.device, "прошлый трек")
+        else:
+            resp = await self.quasar.send(self.device, "прошлый трек")
+            if resp and resp.get("status") != "ok":
+                _LOGGER.warning(f"Failed to previous track: {resp}")
     async def async_media_next_track(self):
         if self.local_state: await self.glagol.send({"command": "next"})
-        else: await self.quasar.send(self.device, "следующий трек")
+        else:
+            resp = await self.quasar.send(self.device, "следующий трек")
+            if resp and resp.get("status") != "ok":
+                _LOGGER.warning(f"Failed to next track: {resp}")
     async def async_turn_on(self):
         if self.local_state: await self.glagol.send(utils.update_form("personal_assistant.scenarios.player_continue"))
         else: await self.async_media_play()
@@ -455,15 +473,23 @@ class YandexStationBase(MediaBrowser, RestoreEntity):
         else:
             if media_type.startswith(("text:", "dialog:")):
                 media_id = self.yandex_dialog(media_type, media_id)
-                await self.quasar.send(self.device, media_id)
+                resp = await self.quasar.send(self.device, media_id)
+                if resp and resp.get("status") != "ok":
+                    _LOGGER.warning(f"Failed to send dialog: {resp}")
             elif media_type == "text":
                 media_id = utils.fix_cloud_text(media_id)
-                await self.quasar.send(self.device, media_id, is_tts=True)
+                resp = await self.quasar.send(self.device, media_id, is_tts=True)
+                if resp and resp.get("status") != "ok":
+                    _LOGGER.warning(f"Failed to send text: {resp}")
             elif media_type == "command":
                 media_id = utils.fix_cloud_text(media_id)
-                await self.quasar.send(self.device, media_id)
+                resp = await self.quasar.send(self.device, media_id)
+                if resp and resp.get("status") != "ok":
+                    _LOGGER.warning(f"Failed to send command: {resp}")
             elif media_type in ("music", "track", "album", "playlist", "artist"):
-                await self.quasar.send(self.device, f"включи {media_id}")
+                resp = await self.quasar.send(self.device, f"включи {media_id}")
+                if resp and resp.get("status") != "ok":
+                    _LOGGER.warning(f"Failed to play music: {resp}")
             elif media_type == "brightness":
                 await self._set_brightness(media_id); return
             else:

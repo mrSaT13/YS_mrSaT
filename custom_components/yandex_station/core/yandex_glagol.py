@@ -54,87 +54,84 @@ class YandexGlagol:
             "device_id": self.device["quasar_info"]["device_id"],
             "platform": self.device["quasar_info"]["platform"],
         }
-        # Try first without Authorization header (use session cookies if present).
-        host = urlparse("https://quasar.yandex.net").netloc
-        cooldowns = getattr(self.session, "_forbidden_cooldowns", {})
-        until = cooldowns.get(host)
-        if until and time.time() < until:
-            _LOGGER.warning(f"[{self.name}] Glagol token host {host} in 403 cooldown until {until}")
-            return None
 
-        # First attempt: no extra headers, rely on session cookies
+        music = getattr(self.session, "music_token", None)
+        x_token = getattr(self.session, "x_token", None)
+        
+        _LOGGER.debug(f"[{self.name}] Glagol token request: music_token={bool(music)}, x_token={bool(x_token)}")
+
+        # Try first without Authorization (cookies only)
         r = None
         try:
-            _LOGGER.debug(f"[{self.name}] Glagol token request: trying without Authorization (cookies)")
-            r = await self.session.get(
-                "https://quasar.yandex.net/glagol/token", params=payload
-            )
+            _LOGGER.debug(f"[{self.name}] Attempt 1: glagol/token without Authorization (cookies)")
+            r = await self.session.get("https://quasar.yandex.net/glagol/token", params=payload, timeout=10)
+            resp_text = await r.text()
+            resp = json.loads(resp_text)
+            
+            if resp.get("status") == "ok":
+                _LOGGER.debug(f"[{self.name}] Success with cookies")
+                return resp["token"]
+            else:
+                _LOGGER.debug(f"[{self.name}] Cookies failed: {resp.get('status')}")
         except Exception as e:
-            _LOGGER.debug(f"[{self.name}] Glagol token request (no-auth) failed: {e}")
-            r = None
-
-        try:
-            _LOGGER.debug(f"[{self.name}] Glagol response status: {getattr(r, 'status', 'no-response')}")
-
-            status = getattr(r, 'status', None)
-            if status == 403:
-                # close first response
+            _LOGGER.debug(f"[{self.name}] Attempt 1 error: {e}")
+        finally:
+            if r:
                 try:
                     r.close()
                 except Exception:
                     pass
-                # Try again with Authorization (music_token/x_token) as fallback
-                music = getattr(self.session, "music_token", None)
-                x_token = getattr(self.session, "x_token", None)
-                headers = {}
-                if music:
-                    headers["Authorization"] = f"OAuth {music}"
-                    _LOGGER.debug(f"[{self.name}] glagol 403 — retrying with music_token")
-                elif x_token:
-                    headers["Authorization"] = f"OAuth {x_token}"
-                    _LOGGER.debug(f"[{self.name}] glagol 403 — retrying with x_token")
+
+        # Try with music_token
+        if music:
+            r = None
+            try:
+                _LOGGER.debug(f"[{self.name}] Attempt 2: glagol/token with music_token")
+                headers = {"Authorization": f"OAuth {music}"}
+                r = await self.session.get("https://quasar.yandex.net/glagol/token", params=payload, headers=headers, timeout=10)
+                resp_text = await r.text()
+                resp = json.loads(resp_text)
+                
+                if resp.get("status") == "ok":
+                    _LOGGER.debug(f"[{self.name}] Success with music_token")
+                    return resp["token"]
                 else:
-                    _LOGGER.warning(f"[{self.name}] Glagol token returned 403 and no tokens available to retry")
+                    _LOGGER.warning(f"[{self.name}] music_token failed: {resp.get('status')}")
+            except Exception as e:
+                _LOGGER.debug(f"[{self.name}] Attempt 2 error: {e}")
+            finally:
+                if r:
                     try:
-                        if hasattr(self.session, '_forbidden_cooldowns'):
-                            self.session._forbidden_cooldowns[host] = time.time() + 300
-                            _LOGGER.warning(f"[{self.name}] Set 403 cooldown for {host} (300s)")
+                        r.close()
                     except Exception:
                         pass
-                    return None
 
-                headers.setdefault("User-Agent", "com.yandex.mobile.auth.sdk/7.42.0 (Xiaomi Redmi; Android 10) Yandex")
-                headers.setdefault("Accept", "application/json")
-                headers.setdefault("Connection", "keep-alive")
-
-                try:
-                    r = await self.session.get(
-                        "https://quasar.yandex.net/glagol/token", params=payload, headers=headers
-                    )
-                except Exception as e:
-                    _LOGGER.error(f"[{self.name}] Glagol token retry failed: {e}")
-                    return None
-
-            # ensure we have a response object
-            if not r:
-                _LOGGER.error(f"[{self.name}] No response received for glagol token request")
-                return None
-
-            # read response body
-            resp_text = await r.text()
+        # Try with x_token
+        if x_token:
+            r = None
             try:
+                _LOGGER.debug(f"[{self.name}] Attempt 3: glagol/token with x_token")
+                headers = {"Authorization": f"OAuth {x_token}"}
+                r = await self.session.get("https://quasar.yandex.net/glagol/token", params=payload, headers=headers, timeout=10)
+                resp_text = await r.text()
                 resp = json.loads(resp_text)
+                
+                if resp.get("status") == "ok":
+                    _LOGGER.debug(f"[{self.name}] Success with x_token")
+                    return resp["token"]
+                else:
+                    _LOGGER.warning(f"[{self.name}] x_token failed: {resp.get('status')}")
             except Exception as e:
-                _LOGGER.error(f"[{self.name}] Failed to parse glagol token response: {resp_text[:400]}")
-                raise
+                _LOGGER.debug(f"[{self.name}] Attempt 3 error: {e}")
+            finally:
+                if r:
+                    try:
+                        r.close()
+                    except Exception:
+                        pass
 
-            _LOGGER.debug(f"[{self.name}] Glagol response status: {resp.get('status')}")
-            assert resp["status"] == "ok", resp
-
-            return resp["token"]
-        finally:
-            if r:
-                r.close()
+        _LOGGER.error(f"[{self.name}] All attempts to get glagol token failed")
+        return None
 
     async def start_or_restart(self):
         # first time
@@ -165,13 +162,13 @@ class YandexGlagol:
             if not self.device_token:
                 self.device_token = await self.get_device_token()
 
-            # If token is not available (e.g. 403 cooldown), postpone local connect
+            # If token is not available, postpone local connect with exponential backoff
             if not self.device_token:
                 self.debug("Device token not available — postponing local connect")
                 # return to cloud mode and schedule retry
                 self.update_handler(None)
-                delay = 30
-                self.debug(f"Таймаут до следующей попытки получения токена {delay}s")
+                delay = min(30 * (2 ** (fails - 1)), 300)  # exponential backoff: 30s, 60s, 120s, 240s, 300s (cap)
+                self.debug(f"Таймаут до следующей попытки получения токена {delay}s (fails={fails})")
                 await asyncio.sleep(delay)
                 _ = asyncio.create_task(self._connect(fails))
                 return

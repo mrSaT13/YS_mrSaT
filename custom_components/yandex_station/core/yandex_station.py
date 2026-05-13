@@ -700,7 +700,9 @@ class YandexStationBase(MediaBrowser, RestoreEntity):
                 await self.quasar.device_action(self.device, "volume", int(round(k * volume)))
             except Exception:
                 # Fallback to sending voice command if device_action unsupported
-                await self.quasar.send(self.device, f"громкость на {round(k * volume)}")
+                resp = await self.quasar.send(self.device, f"громкость на {round(k * volume)}")
+                if resp and resp.get("status") != "ok":
+                    _LOGGER.warning(f"Failed to set volume on {self.name}: {resp}")
             if volume > 0:
                 self._attr_is_volume_muted = False
                 self._attr_volume_level = round(volume, 2)
@@ -728,20 +730,24 @@ class YandexStationBase(MediaBrowser, RestoreEntity):
     async def async_media_play(self):
         if self.local_state:
             await self.glagol.send({"command": "play"})
-
         else:
-            await self.quasar.send(self.device, "продолжить")
-            self._attr_state = MediaPlayerState.PLAYING
-            self.async_write_ha_state()
+            resp = await self.quasar.send(self.device, "продолжить")
+            if resp and resp.get("status") == "ok":
+                self._attr_state = MediaPlayerState.PLAYING
+                self.async_write_ha_state()
+            else:
+                _LOGGER.error(f"Failed to play on {self.name}: {resp}")
 
     async def async_media_pause(self):
         if self.local_state:
             await self.glagol.send({"command": "stop"})
-
         else:
-            await self.quasar.send(self.device, "пауза")
-            self._attr_state = MediaPlayerState.PAUSED
-            self.async_write_ha_state()
+            resp = await self.quasar.send(self.device, "пауза")
+            if resp and resp.get("status") == "ok":
+                self._attr_state = MediaPlayerState.PAUSED
+                self.async_write_ha_state()
+            else:
+                _LOGGER.error(f"Failed to pause on {self.name}: {resp}")
 
     async def async_media_stop(self):
         await self.async_media_pause()

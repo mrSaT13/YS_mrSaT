@@ -369,7 +369,10 @@ class YandexSession(BasicSession):
                     if retry > 0: return await self.request(method, url, retry - 1, **kwargs)
             elif r.status == 403:
                 host = urlparse(url).netloc
-                cooldown = 60 if "/glagol/token" in url else 300
+                # Don't set cooldown for glagol/token - retry logic is handled in glagol.py
+                # For other endpoints, use shorter cooldown for GET, longer for POST/PUT
+                should_cooldown = "/glagol/token" not in url
+                cooldown = 30 if method.lower() == "get" else 60
                 if (is_quasar or is_alice) and method.lower() != "get" and self.csrf_token:
                     _LOGGER.debug("403 on non-GET Quasar, dropping CSRF & retrying")
                     self.csrf_token = None
@@ -377,8 +380,9 @@ class YandexSession(BasicSession):
                     if retry > 0: return await self.request(method, url, retry - 1, **kwargs)
                 r.close()
                 _LOGGER.warning(f"403 Forbidden for {url}")
-                self._forbidden_cooldowns[host] = time.time() + cooldown
-                _LOGGER.warning(f"Set 403 cooldown for {host} ({cooldown}s)")
+                if should_cooldown:
+                    self._forbidden_cooldowns[host] = time.time() + cooldown
+                    _LOGGER.warning(f"Set 403 cooldown for {host} ({cooldown}s)")
                 raise Exception(f"{url} returned 403")
             else:
                 text = await r.text()

@@ -276,22 +276,43 @@ class YandexQuasar(Dispatcher):
         finally: r.close()
 
     async def send(self, device: dict, text: str, is_tts: bool = False):
-        if "scenario_id" not in device: return
+        if "scenario_id" not in device: 
+            _LOGGER.warning(f"Device {device.get('id')} has no scenario_id, cannot send command")
+            return {"status": "error", "message": "no_scenario_id"}
+        
         device_id = device["id"]
         name = "ХА " + device_id
         trigger = encode(device_id)
         payload = scenario_speaker_tts(name, trigger, device_id, text) if is_tts else scenario_speaker_action(name, trigger, device_id, text)
         sid = device["scenario_id"]
+        
+        # Update scenario
         r = await self.session.put(f"https://iot.quasar.yandex.ru/m/v4/user/scenarios/{sid}", json=payload)
         try:
             resp = await _safe_response_json(r)
-            assert resp["status"] == "ok", resp
-        finally: r.close()
+            if resp.get("status") != "ok":
+                _LOGGER.error(f"Failed to update scenario for {device_id}: {resp}")
+                return resp
+        except Exception as e:
+            _LOGGER.error(f"Error updating scenario for {device_id}: {e}")
+            return {"status": "error", "message": str(e)}
+        finally: 
+            r.close()
+        
+        # Execute scenario action
         r = await self.session.post(f"https://iot.quasar.yandex.ru/m/user/scenarios/{sid}/actions")
         try:
             resp = await _safe_response_json(r)
-            assert resp["status"] == "ok", resp
-        finally: r.close()
+            if resp.get("status") != "ok":
+                _LOGGER.error(f"Failed to execute scenario action for {device_id}: {resp}")
+                return resp
+            _LOGGER.debug(f"Successfully sent command to {device_id}")
+            return resp
+        except Exception as e:
+            _LOGGER.error(f"Error executing scenario action for {device_id}: {e}")
+            return {"status": "error", "message": str(e)}
+        finally: 
+            r.close()
 
     async def load_local_speakers(self):
         try:
