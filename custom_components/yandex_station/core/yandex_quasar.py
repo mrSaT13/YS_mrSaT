@@ -208,9 +208,10 @@ class YandexQuasar(Dispatcher):
     ssl_context: ssl.SSLContext = None
     _ssl_context_created: bool = False
 
-    def __init__(self, session: YandexSession):
+    def __init__(self, session: YandexSession, config: dict | None = None):
         super().__init__()
         self.session = session
+        self.config = config or {}
         self.online_updated = asyncio.Event()
         self.online_updated.set()
         # SSL контекст создаётся лениво при первом использовании
@@ -400,8 +401,24 @@ class YandexQuasar(Dispatcher):
         _LOGGER.info("🚀 QUASAR INITIALIZATION STARTED")
         _LOGGER.debug(f"x_token present: {bool(self.session.x_token)}")
         
-        # Режим работы API. По умолчанию Legacy, так как Official API v1.0 требует особых прав (OAuth scope).
-        use_official = True 
+        # Режим работы API. Если в сессии уже есть валидные session-cookie
+        # (например, при импорте cookie) — предпочтём Legacy Quasar API,
+        # чтобы не полагаться на Official API, который часто даёт 403.
+        # Config override: if user set force_legacy_api in config, use legacy.
+        cfg_force = bool(self.config.get("force_legacy_api")) if hasattr(self, 'config') else False
+        if cfg_force:
+            use_official = False
+            _LOGGER.info("Config: force_legacy_api=True — using Legacy Quasar API")
+        else:
+            try:
+                diag = await self.session.diagnostics()
+            except Exception:
+                diag = {}
+
+            has_session_id = bool(diag.get("has_session_id"))
+            use_official = False if has_session_id else True
+            if has_session_id:
+                _LOGGER.info("Detected session cookies — forcing Legacy Quasar API (cookie-first mode)")
 
         try:
             if use_official:

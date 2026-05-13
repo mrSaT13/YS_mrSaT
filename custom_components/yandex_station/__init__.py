@@ -73,6 +73,7 @@ CONF_DEBUG = "debug"
 CONF_RECOGNITION_LANG = "recognition_lang"
 CONF_PROXY = "proxy"
 CONF_SSL = "ssl"
+CONF_FORCE_LEGACY = "force_legacy_api"
 
 CONFIG_SCHEMA = vol.Schema(
     {
@@ -97,6 +98,7 @@ CONFIG_SCHEMA = vol.Schema(
                 vol.Optional(CONF_DOMAIN): cv.string,
                 vol.Optional(CONF_PROXY): cv.string,
                 vol.Optional(CONF_SSL): cv.boolean,
+                vol.Optional(CONF_FORCE_LEGACY, default=False): cv.boolean,
                 vol.Optional(CONF_DEBUG, default=False): cv.boolean,
             },
             extra=vol.ALLOW_EXTRA,
@@ -153,6 +155,25 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     except Exception as e:
         raise ConfigEntryNotReady from e
 
+    # Если cookies невалидны, и в entry.data есть username+password — попробуем автоматический вход
+    if not ok and entry.data.get(CONF_USERNAME) and entry.data.get(CONF_PASSWORD):
+        _LOGGER.info("Attempting automated login with stored username/password")
+        try:
+            resp = await yandex.login_username(entry.data.get(CONF_USERNAME))
+            _LOGGER.debug(f"login_username response: {resp.raw}")
+            if resp.ok:
+                resp2 = await yandex.login_password(entry.data.get(CONF_PASSWORD))
+                _LOGGER.debug(f"login_password response: {resp2.raw}")
+                if resp2.ok:
+                    ok = True
+                    _LOGGER.info("Automated login succeeded; cookies refreshed")
+                else:
+                    _LOGGER.warning(f"Automated login failed: {resp2.raw}")
+            else:
+                _LOGGER.warning(f"Automated login_username failed: {resp.raw}")
+        except Exception as e:
+            _LOGGER.error(f"Automated login attempt error: {e}")
+
     if not ok:
         from homeassistant.components import persistent_notification
         persistent_notification.async_create(
@@ -163,7 +184,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         )
         return False
 
-    quasar = YandexQuasar(yandex)
+    quasar = YandexQuasar(yandex, hass.data[DOMAIN][DATA_CONFIG])
     await quasar.init()
 
     await hass_utils.load_fake_devies(hass, quasar)
