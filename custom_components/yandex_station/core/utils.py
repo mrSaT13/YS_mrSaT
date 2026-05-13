@@ -24,6 +24,7 @@ from homeassistant.helpers.template import Template
 from yarl import URL
 
 from . import protobuf, stream
+from .yandex_quasar import _safe_response_json
 from .const import CONF_MEDIA_PLAYERS, DATA_CONFIG, DOMAIN
 from .yandex_session import YandexSession
 
@@ -368,10 +369,10 @@ async def get_playlist_uid(
     session: YandexSession, username: str, playlist_id: str
 ) -> int | None:
     try:
-            r = await session.get(
-                f"https://api.music.yandex.net/users/{username}/playlists/{playlist_id}",
-            )
-            resp = await _safe_response_json(r)
+        r = await session.get(
+            f"https://api.music.yandex.net/users/{username}/playlists/{playlist_id}",
+        )
+        resp = await _safe_response_json(r)
         return resp["result"]["owner"]["uid"]
     except:
         return None
