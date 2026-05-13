@@ -194,6 +194,22 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     await hass.config_entries.async_forward_entry_setups(entry, platforms)
     entry.async_on_unload(entry.add_update_listener(async_reload_entry))
 
+    # Initialize Matrix bot if configured
+    matrix_config = entry.options.get("matrix_bot")
+    if matrix_config and matrix_config.get("access_token"):
+        try:
+            from .hass.matrix_bot import MatrixBotHandler
+            
+            matrix_handler = MatrixBotHandler(hass, matrix_config)
+            hass.data.setdefault(DOMAIN, {})["matrix_handler"] = matrix_handler
+            
+            # Start Matrix bot
+            await matrix_handler.async_start()
+            
+            _LOGGER.info("✅ Matrix bot интеграция инициализирована")
+        except Exception as e:
+            _LOGGER.error(f"Ошибка инициализации Matrix бота: {e}")
+
     return True
 
 
@@ -204,6 +220,14 @@ async def async_reload_entry(hass: HomeAssistant, config_entry: ConfigEntry):
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry):
     quasar: YandexQuasar = hass.data[DOMAIN][entry.unique_id]
     quasar.stop()
+    
+    # Stop Matrix bot if running
+    matrix_handler = hass.data.get(DOMAIN, {}).get("matrix_handler")
+    if matrix_handler:
+        try:
+            await matrix_handler.async_stop()
+        except Exception as e:
+            _LOGGER.error(f"Ошибка при остановке Matrix бота: {e}")
 
     platforms = getattr(quasar, "platforms")
     return await hass.config_entries.async_unload_platforms(entry, platforms)

@@ -21,19 +21,31 @@ def extract_instance(item: dict) -> str | None:
 
 def extract_parameters(items: list[dict]) -> dict:
     result = {}
+    if not items:
+        return result
     for item in items:
-        # skip none (unknown) instances
-        if instance := extract_instance(item):
-            result[instance] = {"retrievable": item["retrievable"], **item["parameters"]}
+        try:
+            # skip none (unknown) instances
+            if instance := extract_instance(item):
+                params = item.get("parameters", {})
+                result[instance] = {"retrievable": item.get("retrievable", False), **params}
+        except (KeyError, TypeError) as e:
+            _LOGGER.debug(f"Error extracting parameter from {item}: {e}")
     return result
 
 
 def extract_state(items: list[dict]) -> dict:
     result = {}
+    if not items:
+        return result
     for item in items:
-        if instance := extract_instance(item):
-            value = item["state"]["value"] if item["state"] else None
-            result[instance] = value
+        try:
+            if instance := extract_instance(item):
+                state = item.get("state")
+                value = state.get("value") if state else None
+                result[instance] = value
+        except (KeyError, TypeError, AttributeError) as e:
+            _LOGGER.debug(f"Error extracting state from {item}: {e}")
     return result
 
 

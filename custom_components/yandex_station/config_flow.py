@@ -108,11 +108,13 @@ class YandexStationFlowHandler(ConfigFlow, domain=DOMAIN):
         if not resp:
             self.cur_step["errors"] = {"base": "unauthorised"}
             return self.cur_step
+        self._login_method = "QR-код"
         return await self._check_yandex_response(resp)
 
     async def async_step_cookies(self, user_input):
         try:
             resp = await self.yandex.login_cookies(user_input["cookies"])
+            self._login_method = "Cookies"
             return await self._check_yandex_response(resp)
         except Exception as e:
             _LOGGER.error(f"Cookies login failed: {e}")
@@ -124,6 +126,7 @@ class YandexStationFlowHandler(ConfigFlow, domain=DOMAIN):
     async def async_step_token(self, user_input):
         try:
             resp = await self.yandex.validate_token(user_input["token"])
+            self._login_method = "Токен"
             return await self._check_yandex_response(resp)
         except Exception as e:
             _LOGGER.error(f"Token validation failed: {e}")
@@ -150,6 +153,10 @@ class YandexStationFlowHandler(ConfigFlow, domain=DOMAIN):
                     self.cur_step["errors"] = {"base": "unauthorised"}
                     return self.cur_step
                 raise AbortFlow("unauthorized")
+            
+            # Log which auth method was used
+            login_type = getattr(self, "_login_method", "unknown")
+            _LOGGER.info(f"✓ Успешная авторизация через {login_type}: {resp.display_login}")
             
             # set unique_id or return existing entry
             entry = await self.async_set_unique_id(resp.display_login)
@@ -189,6 +196,14 @@ class OptionsFlowHandler(OptionsFlow):
         return self.hass.config_entries.async_get_entry(self.handler)
 
     async def async_step_init(self, user_input: dict = None):
+        """Show options menu."""
+        return self.async_show_menu(
+            step_id="init",
+            menu_options=["devices", "matrix_bot"]
+        )
+
+    async def async_step_devices(self, user_input: dict = None):
+        """Configure devices to include."""
         if user_input:
             return self.async_create_entry(title="", data=user_input)
 
@@ -204,7 +219,35 @@ class OptionsFlowHandler(OptionsFlow):
             defaults["include"] = [i for i in include if i in devices]
 
         data = vol_schema({vol.Optional("include"): cv.multi_select(devices)}, defaults)
-        return self.async_show_form(step_id="init", data_schema=data)
+        return self.async_show_form(step_id="devices", data_schema=data)
+
+    async def async_step_matrix_bot(self, user_input: dict = None):
+        """Configure Matrix bot."""
+        if user_input is not None:
+            # Save Matrix bot configuration
+            options = dict(self.config_entry.options)
+            options["matrix_bot"] = user_input
+            self.hass.config_entries.async_update_entry(
+                self.config_entry, options=options
+            )
+            await self.hass.config_entries.async_reload(self.config_entry.entry_id)
+            return self.async_abort(reason="matrix_bot_configured")
+
+        defaults = self.config_entry.options.get("matrix_bot", {})
+        
+        data = vol.Schema({
+            vol.Required("server_url", default=defaults.get("server_url", "https://matrix.org")): str,
+            vol.Required("room_id", default=defaults.get("room_id", "")): str,
+            vol.Required("access_token", default=defaults.get("access_token", "")): str,
+        })
+        
+        return self.async_show_form(
+            step_id="matrix_bot",
+            data_schema=data,
+            description_placeholders={
+                "docs": "https://github.com/mrSaT13/YandexStation/blob/master/custom_components/yandex_station/hass/MATRIX_BOT.md"
+            }
+        )
 
 
 def vol_schema(schema: dict, defaults: dict | None) -> vol.Schema:

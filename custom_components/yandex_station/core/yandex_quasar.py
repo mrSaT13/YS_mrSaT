@@ -388,7 +388,12 @@ class YandexQuasar(Dispatcher):
             f"https://iot.quasar.yandex.ru/m/user/{device['item_type']}s/{device['id']}"
         )
         resp = await r.json()
-        assert resp["status"] == "ok", resp
+        if resp.get("status") == "ok":
+            # Log device state including properties and capabilities
+            if properties := resp.get("properties"):
+                _LOGGER.debug(f"🎵 Свойства устройства {device['name']}: {json.dumps(properties, ensure_ascii=False, indent=2)[:1000]}")
+            if capabilities := resp.get("capabilities"):
+                _LOGGER.debug(f"📱 Возможности {device['name']}: {json.dumps([c.get('type') for c in capabilities], ensure_ascii=False)}")
         return resp
 
     async def device_action(self, device: dict, instance: str, value, relative=False):

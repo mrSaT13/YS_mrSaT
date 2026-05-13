@@ -53,3 +53,15 @@ send_command:
           max: 1
           step: 0.01
           mode: box
+
+matrix_send_message:
+  name: Send Matrix Message
+  description: Send message to Matrix room
+  fields:
+    message:
+      name: Message
+      description: Message text to send (supports Markdown)
+      example: "🎵 Сейчас играет: Song Name by Artist"
+      selector:
+        text:
+          multiline: true

@@ -1,18 +1,18 @@
 {
   "domain": "yandex_station",
-  "name": "Yandex.Station(Fork)",
+  "name": "Yandex.Station (mrSaT Fork)",
   "codeowners": [
     "@AlexxIT",
-	"@mrSaT13"
+    "@mrSaT13"
   ],
   "config_flow": true,
   "dependencies": [
     "http",
     "zeroconf"
   ],
-  "documentation": "https://github.com/AlexxIT/YandexStation",
+  "documentation": "https://github.com/mrSaT13/YandexStation",
   "iot_class": "local_push",
-  "issue_tracker": "https://github.com/AlexxIT/YandexStation/issues",
+  "issue_tracker": "https://github.com/mrSaT13/YandexStation/issues",
   "requirements": [],
-  "version": "3.20.3"
+  "version": "3.23.0"
 }

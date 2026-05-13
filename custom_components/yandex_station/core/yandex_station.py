@@ -560,6 +560,17 @@ class YandexStationBase(MediaBrowser, RestoreEntity):
         self._attr_shuffle = None
 
         if player_state := state.get("playerState"):
+            _LOGGER.debug(f"🎵 PlayerState для {self.name}: title='{player_state.get('title')}', type={player_state.get('type')}, playing={state.get('playing')}")
+            
+            # Log cover information if available
+            if extra := player_state.get("extra"):
+                if cover := extra.get("coverURI"):
+                    _LOGGER.debug(f"🖼️ Обложка: {cover}")
+                else:
+                    _LOGGER.debug(f"📭 Обложка не найдена в extra")
+            else:
+                _LOGGER.debug(f"📭 Нет extra данных (метаданные)")
+            
             if player_state["hasPrev"]:
                 self._attr_supported_features |= MediaPlayerEntityFeature.PREVIOUS_TRACK
             if player_state["hasNext"]:

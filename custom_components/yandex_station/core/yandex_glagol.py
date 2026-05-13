@@ -172,8 +172,10 @@ class YandexGlagol:
                                 response = vinsResponse["response"]
 
                             if card := response.get("card"):
+                                _LOGGER.debug(f"🎵 Карточка (card): {json.dumps(card, ensure_ascii=False, indent=2)[:500]}")
                                 result.update(card)
                             elif cards := response.get("cards"):
+                                _LOGGER.debug(f"🎵 Карточки (cards): {json.dumps(cards[0], ensure_ascii=False, indent=2)[:500]}")
                                 result.update(cards[0])
                             elif is_streaming := response.get("is_streaming"):
                                 result["is_streaming"] = is_streaming
@@ -264,7 +266,10 @@ class YandexGlagol:
 
             # self.next_ping_ts = time.time() + 0.5
 
-            return self.waiters.pop(request_id).result()
+            result = self.waiters.pop(request_id).result()
+            if result and result.get("status") == "ok":
+                _LOGGER.debug(f"{self.name} <= local | Полный ответ: {json.dumps(result, ensure_ascii=False, indent=2)[:1000]}")
+            return result
 
         except asyncio.TimeoutError as e:
             _ = self.waiters.pop(request_id, None)
