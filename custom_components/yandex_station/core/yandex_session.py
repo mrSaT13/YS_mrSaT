@@ -672,8 +672,24 @@ class YandexSession(BasicSession):
                 if self.x_token:
                     headers["Authorization"] = f"OAuth {self.x_token}"
                 else:
-                    _LOGGER.error(f"❌ x_token is empty for Quasar request to {url}!")
-                    raise Exception("x_token required for Quasar request")
+                    # Если x_token отсутствует — проверим, есть ли в jar session-cookie.
+                    try:
+                        cookie_keys = [c.key for c in self._session.cookie_jar]
+                    except Exception:
+                        cookie_keys = []
+
+                    has_session = any(
+                        k.lower() in ("session_id", "sessionid", "sessar", "sessionid2")
+                        for k in cookie_keys
+                    )
+
+                    if has_session:
+                        _LOGGER.debug(
+                            f"Quasar request to {url} without x_token — using session cookies"
+                        )
+                    else:
+                        _LOGGER.error(f"❌ x_token is empty for Quasar request to {url}!")
+                        raise Exception("x_token required for Quasar request")
             # Минимальные заголовки
             headers.setdefault("Accept", "application/json")
             headers.setdefault("Connection", "keep-alive")
