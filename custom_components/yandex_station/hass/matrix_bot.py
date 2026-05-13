@@ -11,7 +11,7 @@ from homeassistant.const import EVENT_HOMEASSISTANT_START, EVENT_HOMEASSISTANT_S
 _LOGGER = logging.getLogger(__name__)
 
 # Matrix events
-EVENT_MATRIX_TEXT = "matrix_text"
+EVENT_MATRIX_TEXT = "yandex_station_matrix_text"
 EVENT_MATRIX_MESSAGE_RESPONSE = "matrix_message_response"
 
 
@@ -66,8 +66,9 @@ class MatrixBotHandler:
                     full_state=False
                 )
                 
-                if response.status_code != "M_OK":
-                    _LOGGER.warning(f"Matrix sync ошибка: {response.status_code}")
+                # Check if sync was successful (SyncResponse doesn't have status_code)
+                if not hasattr(response, 'next_batch'):
+                    _LOGGER.warning(f"Matrix sync failed: {response}")
                     await asyncio.sleep(5)
                     continue
                 

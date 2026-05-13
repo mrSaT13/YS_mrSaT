@@ -10,13 +10,19 @@ _LOGGER = logging.getLogger(__name__)
 
 
 def extract_instance(item: dict) -> str | None:
-    if item["type"] == "devices.capabilities.on_off":
-        return "on"
-    if item["type"] == "devices.capabilities.lock":
-        return "lock"
-    if item["type"] == "devices.capabilities.zigbee_node":
-        return "zigbee"
-    return item["parameters"].get("instance")
+    try:
+        if item.get("type") == "devices.capabilities.on_off":
+            return "on"
+        if item.get("type") == "devices.capabilities.lock":
+            return "lock"
+        if item.get("type") == "devices.capabilities.zigbee_node":
+            return "zigbee"
+        parameters = item.get("parameters")
+        if parameters:
+            return parameters.get("instance")
+        return None
+    except (KeyError, TypeError, AttributeError):
+        return None
 
 
 def extract_parameters(items: list[dict]) -> dict:

@@ -325,6 +325,29 @@ async def _init_services(hass: HomeAssistant):
     service_name = config.get(CONF_TTS_NAME, "yandex_station_say")
     hass.services.async_register("tts", service_name, yandex_station_say)
 
+    # Register Matrix bot service
+    async def matrix_send_message(call: ServiceCall):
+        """Send message to Matrix room."""
+        message = call.data.get("message")
+        if not message:
+            _LOGGER.error("Message parameter required")
+            return
+
+        matrix_handler = hass.data.get(DOMAIN, {}).get("matrix_handler")
+        if not matrix_handler:
+            _LOGGER.error("Matrix bot not configured or not running")
+            return
+
+        success = await matrix_handler.send_message(message)
+        if not success:
+            _LOGGER.error(f"Failed to send message to Matrix: {message}")
+
+    hass.services.async_register(
+        DOMAIN,
+        "matrix_send_message",
+        matrix_send_message,
+    )
+
 
 async def _setup_entry_from_config(hass: HomeAssistant):
     """Support legacy config from YAML."""
