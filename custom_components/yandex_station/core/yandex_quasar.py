@@ -280,7 +280,7 @@ class YandexQuasar(Dispatcher):
             timeout=aiohttp.ClientTimeout(total=30, sock_connect=10, sock_read=20),
         )
         try:
-                resp = await _safe_response_json(r)
+            resp = await _safe_response_json(r)
             devices = resp.get("devices")
             if not isinstance(devices, list):
                 raise Exception(f"Official list response without devices: {resp}")
@@ -441,12 +441,12 @@ class YandexQuasar(Dispatcher):
         r = await self.session.get(
             f"https://iot.quasar.yandex.ru/m/user/devices/{device['id']}/configuration"
         )
-            try:
-                resp = await _safe_response_json(r)
-                assert resp["status"] == "ok", resp
-                device.update(resp["quasar_info"])
-            finally:
-                r.close()
+        try:
+            resp = await _safe_response_json(r)
+            assert resp["status"] == "ok", resp
+            device.update(resp["quasar_info"])
+        finally:
+            r.close()
 
     async def load_scenarios(self):
         """Получает список сценариев."""
@@ -566,7 +566,7 @@ class YandexQuasar(Dispatcher):
                 "https://quasar.yandex.net/glagol/device_list"
             )
             try:
-                    resp = await _safe_response_json(r)
+                resp = await _safe_response_json(r)
                 return [
                     {"device_id": d["id"], "name": d["name"], "platform": d["platform"]}
                     for d in resp.get("devices", [])
