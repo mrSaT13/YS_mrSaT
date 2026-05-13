@@ -27,6 +27,7 @@ class MatrixBotHandler:
         self.access_token = config.get("access_token")
         self.client = None
         self.sync_token = None
+        self.sent_event_ids = set()  # Отправленные нами event_id - не обрабатываем их снова!
 
     async def async_start(self):
         """Start Matrix bot client."""
@@ -34,6 +35,10 @@ class MatrixBotHandler:
             # Import nio here to avoid import errors if not installed
             import nio
 
+            if not self.server_url or not self.access_token:
+                _LOGGER.error("Matrix server_url или access_token не установлены")
+                return
+            
             self.client = nio.AsyncClient(self.server_url)
             self.client.access_token = self.access_token
             
@@ -43,9 +48,10 @@ class MatrixBotHandler:
             self.hass.create_task(self._sync_loop())
             
         except ImportError:
-            _LOGGER.error("Matrix требует установки matrix-client: pip install matrix-client")
+            _LOGGER.error("Matrix требует установки matrix-nio: pip install matrix-nio")
         except Exception as e:
             _LOGGER.error(f"Ошибка инициализации Matrix: {e}")
+            self.client = None
 
     async def async_stop(self):
         """Stop Matrix bot client."""
@@ -58,8 +64,14 @@ class MatrixBotHandler:
 
     async def _sync_loop(self):
         """Sync messages from Matrix room."""
+        await asyncio.sleep(2)  # Wait for client initialization
+        
         while self.client:
             try:
+                if not self.client or not self.room_id:
+                    await asyncio.sleep(5)
+                    continue
+                
                 response = await self.client.sync(
                     since=self.sync_token,
                     timeout=30000,

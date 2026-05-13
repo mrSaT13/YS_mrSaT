@@ -27,31 +27,35 @@ def extract_instance(item: dict) -> str | None:
 
 def extract_parameters(items: list[dict]) -> dict:
     result = {}
-    if not items:
+    if not items or not isinstance(items, list):
         return result
     for item in items:
         try:
+            if not isinstance(item, dict):
+                continue
             # skip none (unknown) instances
             if instance := extract_instance(item):
                 params = item.get("parameters", {})
                 result[instance] = {"retrievable": item.get("retrievable", False), **params}
         except (KeyError, TypeError) as e:
-            _LOGGER.debug(f"Error extracting parameter from {item}: {e}")
+            _LOGGER.debug(f"Error extracting parameter: {e}")
     return result
 
 
 def extract_state(items: list[dict]) -> dict:
     result = {}
-    if not items:
+    if not items or not isinstance(items, list):
         return result
     for item in items:
         try:
+            if not isinstance(item, dict):
+                continue
             if instance := extract_instance(item):
                 state = item.get("state")
                 value = state.get("value") if state else None
                 result[instance] = value
         except (KeyError, TypeError, AttributeError) as e:
-            _LOGGER.debug(f"Error extracting state from {item}: {e}")
+            _LOGGER.debug(f"Error extracting state: {e}")
     return result
 
 
@@ -81,16 +85,19 @@ class YandexEntity(Entity):
                     self._attr_device_info[key] = value
 
         try:
+            capabilities = device.get("capabilities") or []
+            properties = device.get("properties") or []
+            
             self.internal_init(
-                extract_parameters(device["capabilities"]),
-                extract_parameters(device["properties"]),
+                extract_parameters(capabilities),
+                extract_parameters(properties),
             )
             self.internal_update(
-                extract_state(device["capabilities"]),
-                extract_state(device["properties"]),
+                extract_state(capabilities),
+                extract_state(properties),
             )
         except Exception as e:
-            _LOGGER.error("Device init failed: %s", repr(e))
+            _LOGGER.debug("Device init warning: %s", repr(e))
 
         self.quasar.subscribe_update(device["id"], self.on_update)
 
