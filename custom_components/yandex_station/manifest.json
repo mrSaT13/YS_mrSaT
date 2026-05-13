@@ -1,8 +1,7 @@
 {
   "domain": "yandex_station",
-  "name": "Yandex.Station (mrSaT)",
+  "name": "Yandex.Station",
   "codeowners": [
-    "@mrSaT13",
     "@AlexxIT"
   ],
   "config_flow": true,
@@ -10,11 +9,9 @@
     "http",
     "zeroconf"
   ],
-  "documentation": "https://github.com/mrSaT13/YS_mrSaT",
+  "documentation": "https://github.com/AlexxIT/YandexStation",
   "iot_class": "local_push",
-  "issue_tracker": "https://github.com/mrSaT13/YS_mrSaT/issues",
-  "requirements": [
-    "ya-passport-auth>=0.3.0"
-  ],
-  "version": "3.20.3-mrSaT3"
+  "issue_tracker": "https://github.com/AlexxIT/YandexStation/issues",
+  "requirements": [],
+  "version": "3.20.3"
 }

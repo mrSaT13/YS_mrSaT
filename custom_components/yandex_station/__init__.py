@@ -73,7 +73,6 @@ CONF_DEBUG = "debug"
 CONF_RECOGNITION_LANG = "recognition_lang"
 CONF_PROXY = "proxy"
 CONF_SSL = "ssl"
-CONF_FORCE_LEGACY = "force_legacy_api"
 
 CONFIG_SCHEMA = vol.Schema(
     {
@@ -98,7 +97,6 @@ CONFIG_SCHEMA = vol.Schema(
                 vol.Optional(CONF_DOMAIN): cv.string,
                 vol.Optional(CONF_PROXY): cv.string,
                 vol.Optional(CONF_SSL): cv.boolean,
-                vol.Optional(CONF_FORCE_LEGACY, default=False): cv.boolean,
                 vol.Optional(CONF_DEBUG, default=False): cv.boolean,
             },
             extra=vol.ALLOW_EXTRA,
@@ -155,53 +153,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     except Exception as e:
         raise ConfigEntryNotReady from e
 
-    # Если cookies невалидны, и в entry.data есть username+password — попробуем автоматический вход
-    if not ok and entry.data.get(CONF_USERNAME) and entry.data.get(CONF_PASSWORD):
-        _LOGGER.info("Attempting automated login with stored username/password")
-        try:
-            resp = await yandex.login_username(entry.data.get(CONF_USERNAME))
-            _LOGGER.debug(f"login_username response: {resp.raw}")
-            if resp.ok:
-                resp2 = await yandex.login_password(entry.data.get(CONF_PASSWORD))
-                _LOGGER.debug(f"login_password response: {resp2.raw}")
-                if resp2.ok:
-                    ok = True
-                    _LOGGER.info("Automated login succeeded; cookies refreshed")
-                else:
-                    _LOGGER.warning(f"Automated login failed: {resp2.raw}")
-            else:
-                _LOGGER.warning(f"Automated login_username failed: {resp.raw}")
-        except Exception as e:
-            _LOGGER.error(f"Automated login attempt error: {e}")
-
     if not ok:
-        from homeassistant.components import persistent_notification
-        persistent_notification.async_create(
-            hass,
+        hass.components.persistent_notification.async_create(
             "Необходимо заново авторизоваться в Яндексе. Для этого [добавьте "
             "новую интеграцию](/config/integrations) с тем же логином.",
             title="Yandex.Station",
         )
         return False
 
-    quasar = YandexQuasar(yandex, hass.data[DOMAIN][DATA_CONFIG])
-    try:
-        await quasar.init()
-    except Exception as e:
-        _LOGGER.error(f"Failed to initialize YandexQuasar during setup: {e}")
-        from homeassistant.components import persistent_notification
+    quasar = YandexQuasar(yandex)
+    await quasar.init()
 
-        persistent_notification.async_create(
-            hass,
-            "Не удалось получить список устройств Яндекса во время настройки. Проверьте лог и повторите попытку позже.",
-            title="Yandex.Station",
-        )
-        return False
-
-    try:
-        await hass_utils.load_fake_devies(hass, quasar)
-    except Exception as e:
-        _LOGGER.warning(f"load_fake_devies failed: {e}")
+    await hass_utils.load_fake_devies(hass, quasar)
 
     # entry.unique_id - user login
     hass.data[DOMAIN][entry.unique_id] = quasar
@@ -307,90 +270,6 @@ async def _init_services(hass: HomeAssistant):
         )
     except ImportError as e:
         _LOGGER.warning(repr(e))
-
-    # --- Import cookies service: импорт JSON cookies или строку cookies в session
-    async def import_cookies_service(call: ServiceCall):
-        """Import cookies into session for a given config entry unique_id.
-
-        Params:
-        - unique_id (optional): login/unique id of entry. If omitted and only one entry exists, it will be used.
-        - cookies: string (either JSON export from browser extension or serialized cookies string)
-        """
-        unique_id = call.data.get("unique_id")
-        cookies = call.data.get("cookies")
-        if not cookies:
-            _LOGGER.error("import_cookies: 'cookies' parameter required")
-            return
-
-        # find target quasar
-        entries = list(hass.data[DOMAIN].keys())
-        # skip DATA_CONFIG and DATA_SPEAKERS keys
-        candidates = [k for k in entries if k not in (DATA_CONFIG, DATA_SPEAKERS)]
-        target_key = None
-        if unique_id:
-            target_key = unique_id
-        elif len(candidates) == 1:
-            target_key = candidates[0]
-        else:
-            _LOGGER.error("import_cookies: multiple entries present, please provide 'unique_id'")
-            return
-
-        quasar: YandexQuasar = hass.data[DOMAIN].get(target_key)
-        if not quasar:
-            _LOGGER.error(f"import_cookies: entry {target_key} not found")
-            return
-
-        try:
-            ok_resp = await quasar.session.login_cookies(cookies)
-            _LOGGER.info(f"import_cookies: login_cookies result: {ok_resp.raw if hasattr(ok_resp, 'raw') else ok_resp}")
-        except Exception as e:
-            _LOGGER.error(f"import_cookies failed: {e}")
-
-    hass.services.async_register(DOMAIN, "import_cookies", import_cookies_service)
-
-    # --- Diagnostics service: возвращает базовую информацию о сессии
-    try:
-        from homeassistant.helpers import service as _service_helper
-
-        async def diagnostics_service(call: ServiceCall) -> ServiceResponse:
-            unique_id = call.data.get("unique_id")
-            entries = list(hass.data[DOMAIN].keys())
-            candidates = [k for k in entries if k not in (DATA_CONFIG, DATA_SPEAKERS)]
-            target_key = None
-            if unique_id:
-                target_key = unique_id
-            elif len(candidates) == 1:
-                target_key = candidates[0]
-            else:
-                return {"error": "multiple_entries, provide unique_id"}
-
-            quasar: YandexQuasar = hass.data[DOMAIN].get(target_key)
-            if not quasar:
-                return {"error": "entry_not_found"}
-
-            diag = await quasar.session.diagnostics()
-            _LOGGER.info(f"yandex_station.diagnostics for {target_key}: {diag}")
-            return diag
-
-        hass.services.async_register(DOMAIN, "diagnostics", diagnostics_service, supports_response=SupportsResponse.OPTIONAL)
-    except Exception:
-        # fallback simple registration
-        async def diagnostics_service_simple(call: ServiceCall):
-            unique_id = call.data.get("unique_id")
-            entries = list(hass.data[DOMAIN].keys())
-            candidates = [k for k in entries if k not in (DATA_CONFIG, DATA_SPEAKERS)]
-            target_key = unique_id if unique_id else (candidates[0] if len(candidates) == 1 else None)
-            if not target_key:
-                _LOGGER.error("diagnostics: multiple entries present, please provide 'unique_id'")
-                return
-            quasar: YandexQuasar = hass.data[DOMAIN].get(target_key)
-            if not quasar:
-                _LOGGER.error(f"diagnostics: entry {target_key} not found")
-                return
-            diag = await quasar.session.diagnostics()
-            _LOGGER.info(f"yandex_station.diagnostics for {target_key}: {diag}")
-
-        hass.services.async_register(DOMAIN, "diagnostics", diagnostics_service_simple)
 
     async def yandex_station_say(call: ServiceCall):
         entity_ids = call.data.get(ATTR_ENTITY_ID) or utils.find_station(

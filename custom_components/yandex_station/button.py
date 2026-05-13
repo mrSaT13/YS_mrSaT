@@ -29,10 +29,6 @@ async def async_setup_entry(hass, entry, async_add_entities):
                     continue
                 if extract_instance(instance) in instances:
                     entities.append(YandexCustomButton(quasar, device, instance))
-        
-        # Добавляем кнопку теста для колонок
-        if device.get("type", "").startswith("devices.types.smart_speaker"):
-             entities.append(YandexTestButton(quasar, device))
 
     async_add_entities(entities)
 
@@ -52,24 +48,6 @@ class YandexCameraButton(ButtonEntity, YandexEntity):
         if direction == "left":
             self.instance = "camera_pan"
             self.value = -1
-
-
-class YandexTestButton(ButtonEntity, YandexEntity):
-    """Кнопка для теста управления (отправляет 'Алиса, время')."""
-    _attr_name = "Test Command"
-    _attr_icon = "mdi:play-box-outline"
-
-    async def async_press(self) -> None:
-        # Отправляем простую команду через текст
-        # Можно использовать любой метод, который есть у YandexStationEntity
-        for speaker in self.quasar.speakers:
-            if speaker["id"] == self.device["id"]:
-                if entity := speaker.get("entity"):
-                    await entity.async_send_command("Алиса, время")
-                    return
-        
-        # Если не нашли сущность, шлём через quasar напрямую (запасной вариант)
-        await self.quasar.device_action(self.device, "text_action", "Алиса, время")
         elif direction == "right":
             self.instance = "camera_pan"
             self.value = 1
