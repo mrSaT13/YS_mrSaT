@@ -310,7 +310,8 @@ class YandexQuasar(Dispatcher):
         """Запускает сценарий на выполнение команды или TTS."""
         # skip send for yandex modules
         if "scenario_id" not in device:
-            return
+            return {"status": "error", "message": "Device has no scenario_id"}
+        
         _LOGGER.debug(f"{device['name']} => cloud | {text}")
 
         device_id = device["id"]
@@ -324,17 +325,29 @@ class YandexQuasar(Dispatcher):
 
         sid = device["scenario_id"]
 
-        r = await self.session.put(
-            f"https://iot.quasar.yandex.ru/m/v4/user/scenarios/{sid}", json=payload
-        )
-        resp = await r.json()
-        assert resp["status"] == "ok", resp
+        try:
+            # Update scenario
+            r = await self.session.put(
+                f"https://iot.quasar.yandex.ru/m/v4/user/scenarios/{sid}", json=payload
+            )
+            resp = await r.json()
+            if resp.get("status") != "ok":
+                _LOGGER.error(f"Failed to update scenario: {resp}")
+                return resp
 
-        r = await self.session.post(
-            f"https://iot.quasar.yandex.ru/m/user/scenarios/{sid}/actions"
-        )
-        resp = await r.json()
-        assert resp["status"] == "ok", resp
+            # Execute action
+            r = await self.session.post(
+                f"https://iot.quasar.yandex.ru/m/user/scenarios/{sid}/actions"
+            )
+            resp = await r.json()
+            if resp.get("status") != "ok":
+                _LOGGER.error(f"Failed to execute action: {resp}")
+                return resp
+            
+            return resp
+        except Exception as e:
+            _LOGGER.error(f"Error sending command to {device['name']}: {e}")
+            return {"status": "error", "message": str(e)}
 
     async def load_local_speakers(self):
         """Загружает список локальных колонок. Не используется."""

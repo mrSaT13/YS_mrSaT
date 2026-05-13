@@ -53,14 +53,63 @@ class YandexGlagol:
             "device_id": self.device["quasar_info"]["device_id"],
             "platform": self.device["quasar_info"]["platform"],
         }
-        r = await self.session.get(
-            "https://quasar.yandex.net/glagol/token", params=payload
-        )
-        # @dext0r: fix bug with wrong content-type
-        resp = json.loads(await r.text())
-        assert resp["status"] == "ok", resp
 
-        return resp["token"]
+        music = getattr(self.session, "music_token", None)
+        x_token = getattr(self.session, "x_token", None)
+
+        # Attempt 1: Request without Authorization (cookies only)
+        try:
+            self.debug("Попытка 1: glagol/token без Authorization (только cookies)")
+            r = await self.session.get(
+                "https://quasar.yandex.net/glagol/token", params=payload
+            )
+            resp = json.loads(await r.text())
+            if resp.get("status") == "ok":
+                self.debug("Успешно с cookies")
+                return resp["token"]
+            else:
+                self.debug(f"Cookies не сработали: {resp.get('status')}")
+        except Exception as e:
+            self.debug(f"Ошибка попытки 1: {e}")
+
+        # Attempt 2: Request with music_token
+        if music:
+            try:
+                self.debug("Попытка 2: glagol/token с music_token")
+                r = await self.session._get(
+                    "https://quasar.yandex.net/glagol/token",
+                    params=payload,
+                    headers={"Authorization": f"OAuth {music}"},
+                )
+                resp = json.loads(await r.text())
+                if resp.get("status") == "ok":
+                    self.debug("Успешно с music_token")
+                    return resp["token"]
+                else:
+                    _LOGGER.warning(f"music_token не сработал: {resp.get('status')}")
+            except Exception as e:
+                self.debug(f"Ошибка попытки 2: {e}")
+
+        # Attempt 3: Request with x_token
+        if x_token:
+            try:
+                self.debug("Попытка 3: glagol/token с x_token")
+                r = await self.session._get(
+                    "https://quasar.yandex.net/glagol/token",
+                    params=payload,
+                    headers={"Authorization": f"OAuth {x_token}"},
+                )
+                resp = json.loads(await r.text())
+                if resp.get("status") == "ok":
+                    self.debug("Успешно с x_token")
+                    return resp["token"]
+                else:
+                    _LOGGER.warning(f"x_token не сработал: {resp.get('status')}")
+            except Exception as e:
+                self.debug(f"Ошибка попытки 3: {e}")
+
+        _LOGGER.error(f"Не удалось получить токен устройства для {self.name}")
+        return None
 
     async def start_or_restart(self):
         # first time

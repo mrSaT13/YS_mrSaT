@@ -734,20 +734,24 @@ class YandexStationBase(MediaBrowser, RestoreEntity):
     async def async_media_play(self):
         if self.local_state:
             await self.glagol.send({"command": "play"})
-
         else:
-            await self.quasar.send(self.device, "продолжить")
-            self._attr_state = MediaPlayerState.PLAYING
-            self.async_write_ha_state()
+            resp = await self.quasar.send(self.device, "продолжить")
+            if resp and resp.get("status") == "ok":
+                self._attr_state = MediaPlayerState.PLAYING
+                self.async_write_ha_state()
+            else:
+                _LOGGER.error(f"Failed to play on {self.name}: {resp}")
 
     async def async_media_pause(self):
         if self.local_state:
             await self.glagol.send({"command": "stop"})
-
         else:
-            await self.quasar.send(self.device, "пауза")
-            self._attr_state = MediaPlayerState.PAUSED
-            self.async_write_ha_state()
+            resp = await self.quasar.send(self.device, "пауза")
+            if resp and resp.get("status") == "ok":
+                self._attr_state = MediaPlayerState.PAUSED
+                self.async_write_ha_state()
+            else:
+                _LOGGER.error(f"Failed to pause on {self.name}: {resp}")
 
     async def async_media_stop(self):
         await self.async_media_pause()
@@ -756,13 +760,17 @@ class YandexStationBase(MediaBrowser, RestoreEntity):
         if self.local_state:
             await self.glagol.send({"command": "prev"})
         else:
-            await self.quasar.send(self.device, "прошлый трек")
+            resp = await self.quasar.send(self.device, "прошлый трек")
+            if resp and resp.get("status") != "ok":
+                _LOGGER.warning(f"Failed to previous track on {self.name}: {resp}")
 
     async def async_media_next_track(self):
         if self.local_state:
             await self.glagol.send({"command": "next"})
         else:
-            await self.quasar.send(self.device, "следующий трек")
+            resp = await self.quasar.send(self.device, "следующий трек")
+            if resp and resp.get("status") != "ok":
+                _LOGGER.warning(f"Failed to next track on {self.name}: {resp}")
 
     async def async_turn_on(self):
         if self.local_state:
