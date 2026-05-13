@@ -115,6 +115,11 @@ class YandexGlagol:
                     _LOGGER.error(f"[{self.name}] Glagol token retry failed: {e}")
                     return None
 
+            # ensure we have a response object
+            if not r:
+                _LOGGER.error(f"[{self.name}] No response received for glagol token request")
+                return None
+
             # read response body
             resp_text = await r.text()
             try:

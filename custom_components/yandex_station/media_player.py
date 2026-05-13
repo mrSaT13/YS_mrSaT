@@ -21,7 +21,7 @@ from homeassistant.helpers.restore_state import ExtraStoredData, RestoreEntity, 
 from homeassistant.helpers.template import Template
 from homeassistant.util import slugify
 from . import stream, utils
-from .const import DATA_CONFIG, DOMAIN
+from .core.const import DATA_CONFIG, DOMAIN
 from .quasar_info import QUASAR_INFO
 from .yandex_glagol import YandexGlagol
 from .yandex_music import get_file_info
