@@ -31,6 +31,18 @@ from .hass import shopping_list
 _LOGGER = logging.getLogger(__name__)
 RE_MUSIC_ID = re.compile(r"^\d+(:\d+)?$")
 
+INCLUDE_TYPES = (
+    "devices.types.smart_speaker",
+    "devices.types.smart_speaker.yandex.station",
+    "devices.types.smart_speaker.yandex.station.mini",
+    "devices.types.smart_speaker.yandex.station.mini.2",
+    "devices.types.smart_speaker.yandex.station.micro",
+    "devices.types.smart_speaker.yandex.station.max",
+    "devices.types.smart_speaker.yandex.station.2",
+    "devices.types.smart_speaker.yandex.station.midi",
+    "devices.types.yandex.module",
+)
+
 BASE_FEATURES = (MediaPlayerEntityFeature.TURN_OFF | MediaPlayerEntityFeature.VOLUME_SET |
                  MediaPlayerEntityFeature.VOLUME_STEP | MediaPlayerEntityFeature.VOLUME_MUTE |
                  MediaPlayerEntityFeature.PLAY_MEDIA | MediaPlayerEntityFeature.TURN_ON |
