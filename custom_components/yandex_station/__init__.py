@@ -185,9 +185,23 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         return False
 
     quasar = YandexQuasar(yandex, hass.data[DOMAIN][DATA_CONFIG])
-    await quasar.init()
+    try:
+        await quasar.init()
+    except Exception as e:
+        _LOGGER.error(f"Failed to initialize YandexQuasar during setup: {e}")
+        from homeassistant.components import persistent_notification
 
-    await hass_utils.load_fake_devies(hass, quasar)
+        persistent_notification.async_create(
+            hass,
+            "Не удалось получить список устройств Яндекса во время настройки. Проверьте лог и повторите попытку позже.",
+            title="Yandex.Station",
+        )
+        return False
+
+    try:
+        await hass_utils.load_fake_devies(hass, quasar)
+    except Exception as e:
+        _LOGGER.warning(f"load_fake_devies failed: {e}")
 
     # entry.unique_id - user login
     hass.data[DOMAIN][entry.unique_id] = quasar

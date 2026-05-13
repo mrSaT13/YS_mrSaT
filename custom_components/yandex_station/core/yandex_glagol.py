@@ -54,41 +54,7 @@ class YandexGlagol:
             "device_id": self.device["quasar_info"]["device_id"],
             "platform": self.device["quasar_info"]["platform"],
         }
-        # Передаём Authorization с music_token если он есть (glagol требует music token)
-        headers = {}
-        music = getattr(self.session, "music_token", None)
-        x_token = getattr(self.session, "x_token", None)
-        
-        _LOGGER.debug(f"[{self.name}] glagol token request: music_token={bool(music)}, x_token={bool(x_token)}")
-        
-        if music:
-            headers["Authorization"] = f"OAuth {music}"
-            _LOGGER.debug(f"[{self.name}] Using music_token for glagol")
-        elif x_token:
-            headers["Authorization"] = f"OAuth {x_token}"
-            _LOGGER.debug(f"[{self.name}] Using x_token for glagol (music_token not available)")
-        else:
-            _LOGGER.error(f"[{self.name}] No tokens available for glagol!")
-            raise Exception("No tokens for glagol/token")
-
-        # Минимальные заголовки — избегаем сжатия/фингерпринтинга
-        # Use mobile UA and explicit Accept to match what Yandex expects
-        headers.setdefault("User-Agent", "com.yandex.mobile.auth.sdk/7.42.0 (Xiaomi Redmi; Android 10) Yandex")
-        headers.setdefault("Accept", "application/json")
-        headers.setdefault("Connection", "keep-alive")
-
-        # Log masked Authorization preview to debug which token is sent
-        auth_preview = None
-        if "Authorization" in headers:
-            a = headers["Authorization"]
-            try:
-                preview = a[:12]
-            except Exception:
-                preview = str(type(a))
-            auth_preview = f"{preview}... (len={len(a)})"
-        _LOGGER.debug(f"[{self.name}] Glagol request headers: {list(headers.keys())} Authorization={auth_preview}")
-        
-        # Check for cooldown set by YandexSession on recent 403s
+        # Try first without Authorization header (use session cookies if present).
         host = urlparse("https://quasar.yandex.net").netloc
         cooldowns = getattr(self.session, "_forbidden_cooldowns", {})
         until = cooldowns.get(host)
@@ -96,31 +62,60 @@ class YandexGlagol:
             _LOGGER.warning(f"[{self.name}] Glagol token host {host} in 403 cooldown until {until}")
             return None
 
+        # First attempt: no extra headers, rely on session cookies
         r = None
         try:
+            _LOGGER.debug(f"[{self.name}] Glagol token request: trying without Authorization (cookies)")
             r = await self.session.get(
-                "https://quasar.yandex.net/glagol/token", params=payload, headers=headers
+                "https://quasar.yandex.net/glagol/token", params=payload
             )
         except Exception as e:
-            _LOGGER.error(f"[{self.name}] Glagol token request failed: {e}")
-            return None
+            _LOGGER.debug(f"[{self.name}] Glagol token request (no-auth) failed: {e}")
+            r = None
 
         try:
             _LOGGER.debug(f"[{self.name}] Glagol response status: {getattr(r, 'status', 'no-response')}")
 
-            # If we get explicit 403, set cooldown on session to avoid spamming
             status = getattr(r, 'status', None)
             if status == 403:
+                # close first response
                 try:
-                    if hasattr(self.session, '_forbidden_cooldowns'):
-                        self.session._forbidden_cooldowns[host] = time.time() + 300
-                        _LOGGER.warning(f"[{self.name}] Set 403 cooldown for {host} (300s)")
+                    r.close()
                 except Exception:
                     pass
-                _LOGGER.warning(f"[{self.name}] Glagol token returned 403; returning None and respecting cooldown")
-                return None
+                # Try again with Authorization (music_token/x_token) as fallback
+                music = getattr(self.session, "music_token", None)
+                x_token = getattr(self.session, "x_token", None)
+                headers = {}
+                if music:
+                    headers["Authorization"] = f"OAuth {music}"
+                    _LOGGER.debug(f"[{self.name}] glagol 403 — retrying with music_token")
+                elif x_token:
+                    headers["Authorization"] = f"OAuth {x_token}"
+                    _LOGGER.debug(f"[{self.name}] glagol 403 — retrying with x_token")
+                else:
+                    _LOGGER.warning(f"[{self.name}] Glagol token returned 403 and no tokens available to retry")
+                    try:
+                        if hasattr(self.session, '_forbidden_cooldowns'):
+                            self.session._forbidden_cooldowns[host] = time.time() + 300
+                            _LOGGER.warning(f"[{self.name}] Set 403 cooldown for {host} (300s)")
+                    except Exception:
+                        pass
+                    return None
 
-            # @dext0r: fix bug with wrong content-type — читаем текст и парсим вручную
+                headers.setdefault("User-Agent", "com.yandex.mobile.auth.sdk/7.42.0 (Xiaomi Redmi; Android 10) Yandex")
+                headers.setdefault("Accept", "application/json")
+                headers.setdefault("Connection", "keep-alive")
+
+                try:
+                    r = await self.session.get(
+                        "https://quasar.yandex.net/glagol/token", params=payload, headers=headers
+                    )
+                except Exception as e:
+                    _LOGGER.error(f"[{self.name}] Glagol token retry failed: {e}")
+                    return None
+
+            # read response body
             resp_text = await r.text()
             try:
                 resp = json.loads(resp_text)

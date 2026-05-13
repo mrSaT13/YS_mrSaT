@@ -61,10 +61,9 @@ class YandexStationConfigFlow(ConfigFlow, domain=DOMAIN):
                 data_schema=vol.Schema(
                     {
                         vol.Required("method", default="qr"): vol.In(
-                                {
+                            {
                                 "qr": "QR-код",
                                 "auth": "Пароль или одноразовый ключ",
-                                "email": "Ссылка на E-mail",
                                 "cookies": "Cookies (вставить)",
                                 "cookies_auto": "Cookies (авто, открывает страницу входа)",
                                 "app_password": "Пароль приложения",
@@ -96,11 +95,7 @@ class YandexStationConfigFlow(ConfigFlow, domain=DOMAIN):
                 ),
             )
 
-        if method == "email":
-            return self.async_show_form(
-                step_id=method,
-                data_schema=vol.Schema({vol.Required("username"): str}),
-            )
+        # removed email-based magic link flow — prefer QR/app-password/cookies
 
         if method == "cookies":
             return self.async_show_form(
@@ -210,23 +205,14 @@ class YandexStationConfigFlow(ConfigFlow, domain=DOMAIN):
         return await self._check_yandex_response(resp)
 
     async def async_step_email(self, user_input):
-        resp = await self.yandex.login_username(user_input["username"])
-        if not resp.magic_link_email:
-            self.cur_step["errors"] = {"base": "email.unsupported"}
-            return self.cur_step
-
-        await self.yandex.get_letter()
-        return self.async_show_form(
-            step_id="email2", description_placeholders={"email": resp.magic_link_email}
-        )
+        # legacy email flow removed
+        self.cur_step["errors"] = {"base": "email.unsupported"}
+        return self.cur_step
 
     async def async_step_email2(self, user_input):
-        resp = await self.yandex.login_letter()
-        if not resp:
-            self.cur_step["errors"] = {"base": "unauthorised"}
-            return self.cur_step
-
-        return await self._check_yandex_response(resp)
+        # legacy email flow removed
+        self.cur_step["errors"] = {"base": "email.unsupported"}
+        return self.cur_step
 
     async def async_step_cookies(self, user_input):
         resp = await self.yandex.login_cookies(user_input["cookies"])
