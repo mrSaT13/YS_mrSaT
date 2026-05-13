@@ -26,15 +26,16 @@ class LoginResponse:
 
     @property
     def error(self):
-        return self.raw["errors"][0]
+        errors = self.raw.get("errors", [])
+        return errors[0] if errors else "Unknown error"
 
     @property
     def display_login(self):
-        return self.raw["display_login"]
+        return self.raw.get("display_login", self.raw.get("login", "Unknown"))
 
     @property
     def x_token(self):
-        return self.raw["x_token"]
+        return self.raw.get("x_token", "")
 
 
 class BasicSession:
@@ -178,44 +179,64 @@ class YandexSession(BasicSession):
 
         For JSON format support cookies from different Yandex domains.
         """
-        host = "passport.yandex.ru"
-        if cookies is None:
-            cookies = "; ".join(
-                [
-                    f"{c.key}={c.value}"
-                    for c in self._session.cookie_jar
-                    if c["domain"].endswith("yandex.ru")
-                ]
+        try:
+            host = "passport.yandex.ru"
+            if cookies is None:
+                cookies = "; ".join(
+                    [
+                        f"{c.key}={c.value}"
+                        for c in self._session.cookie_jar
+                        if c["domain"].endswith("yandex.ru")
+                    ]
+                )
+            elif cookies[0] == "[":
+                # @dext0r: fix cookies auth
+                raw = json.loads(cookies)
+                host = next(p["domain"] for p in raw if p["domain"].startswith(".yandex."))
+                cookies = "; ".join([f"{p['name']}={p['value']}" for p in raw])
+
+            # Use Passport OAuth instead of Music OAuth for proper Quasar/Glagol access
+            r = await self._post(
+                "https://mobileproxy.passport.yandex.net/1/bundle/oauth/token_by_sessionid",
+                data={
+                    "client_id": "1a6521b21f5d4b50",
+                    "client_secret": "1c80c5c01a7b4dd08cf2f71de5a7566f",
+                },
+                headers={"Ya-Client-Host": host, "Ya-Client-Cookie": cookies},
             )
-        elif cookies[0] == "[":
-            # @dext0r: fix cookies auth
-            raw = json.loads(cookies)
-            host = next(p["domain"] for p in raw if p["domain"].startswith(".yandex."))
-            cookies = "; ".join([f"{p['name']}={p['value']}" for p in raw])
-
-        # Use Passport OAuth instead of Music OAuth for proper Quasar/Glagol access
-        r = await self._post(
-            "https://mobileproxy.passport.yandex.net/1/bundle/oauth/token_by_sessionid",
-            data={
-                "client_id": "1a6521b21f5d4b50",
-                "client_secret": "1c80c5c01a7b4dd08cf2f71de5a7566f",
-            },
-            headers={"Ya-Client-Host": host, "Ya-Client-Cookie": cookies},
-        )
-        resp = await r.json()
-        x_token = resp["access_token"]
-
-        return await self.validate_token(x_token)
+            resp = await r.json()
+            
+            if "access_token" not in resp:
+                _LOGGER.error(f"No access_token in response: {resp}")
+                return LoginResponse({"status": "error", "errors": ["Cookies invalid or expired"]})
+            
+            x_token = resp["access_token"]
+            return await self.validate_token(x_token)
+        except json.JSONDecodeError as e:
+            _LOGGER.error(f"Invalid cookies format: {e}")
+            return LoginResponse({"status": "error", "errors": ["cookies.not_matched"]})
+        except Exception as e:
+            _LOGGER.error(f"Login cookies error: {e}")
+            return LoginResponse({"status": "error", "errors": [str(e)]})
 
     async def validate_token(self, x_token: str) -> LoginResponse:
         """Return user info using token."""
-        r = await self._get(
-            "https://mobileproxy.passport.yandex.net/1/bundle/account/short_info/?avatar_size=islands-300",
-            headers={"Authorization": f"OAuth {x_token}"},
-        )
-        resp = await r.json()
-        resp["x_token"] = x_token
-        return LoginResponse(resp)
+        try:
+            r = await self._get(
+                "https://mobileproxy.passport.yandex.net/1/bundle/account/short_info/?avatar_size=islands-300",
+                headers={"Authorization": f"OAuth {x_token}"},
+            )
+            resp = await r.json()
+            
+            if resp.get("status") != "ok":
+                _LOGGER.error(f"Token validation failed: {resp}")
+                return LoginResponse({"status": "error", "errors": ["token.invalid"]})
+            
+            resp["x_token"] = x_token
+            return LoginResponse(resp)
+        except Exception as e:
+            _LOGGER.error(f"Validate token error: {e}")
+            return LoginResponse({"status": "error", "errors": [str(e)]})
 
     async def login_token(self, x_token: str) -> bool:
         """Login to Yandex with x-token. Usual you should'n call this method.

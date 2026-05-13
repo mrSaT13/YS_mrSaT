@@ -111,18 +111,46 @@ class YandexStationFlowHandler(ConfigFlow, domain=DOMAIN):
         return await self._check_yandex_response(resp)
 
     async def async_step_cookies(self, user_input):
-        resp = await self.yandex.login_cookies(user_input["cookies"])
-        return await self._check_yandex_response(resp)
+        try:
+            resp = await self.yandex.login_cookies(user_input["cookies"])
+            return await self._check_yandex_response(resp)
+        except Exception as e:
+            _LOGGER.error(f"Cookies login failed: {e}")
+            if self.cur_step:
+                self.cur_step["errors"] = {"base": "cookies.not_matched"}
+                return self.cur_step
+            raise
 
     async def async_step_token(self, user_input):
-        resp = await self.yandex.validate_token(user_input["token"])
-        return await self._check_yandex_response(resp)
+        try:
+            resp = await self.yandex.validate_token(user_input["token"])
+            return await self._check_yandex_response(resp)
+        except Exception as e:
+            _LOGGER.error(f"Token validation failed: {e}")
+            if self.cur_step:
+                self.cur_step["errors"] = {"base": "token.invalid"}
+                return self.cur_step
+            raise
 
     async def _check_yandex_response(self, resp: LoginResponse):
         """Check Yandex response. Do not create entry for the same login. Show
         captcha form if captcha required. Show auth form with error if error.
         """
+        if not resp or not isinstance(resp, LoginResponse):
+            _LOGGER.error(f"Invalid response type: {type(resp)}")
+            if self.cur_step:
+                self.cur_step["errors"] = {"base": "unauthorised"}
+                return self.cur_step
+            raise AbortFlow("unauthorized")
+
         if resp.ok:
+            if not resp.x_token:
+                _LOGGER.error(f"No x_token in response")
+                if self.cur_step:
+                    self.cur_step["errors"] = {"base": "unauthorised"}
+                    return self.cur_step
+                raise AbortFlow("unauthorized")
+            
             # set unique_id or return existing entry
             entry = await self.async_set_unique_id(resp.display_login)
             if entry:
@@ -131,20 +159,23 @@ class YandexStationFlowHandler(ConfigFlow, domain=DOMAIN):
                     entry, data={"x_token": resp.x_token}
                 )
                 return self.async_abort(reason="account_updated")
-
             else:
                 # create new entry for new login
                 return self.async_create_entry(
                     title=resp.display_login, data={"x_token": resp.x_token}
                 )
-
         elif resp.errors:
-            _LOGGER.debug(f"Config error: {resp.error}")
+            _LOGGER.warning(f"Yandex error: {resp.error}")
             if self.cur_step:
                 self.cur_step["errors"] = {"base": resp.error}
                 return self.cur_step
+        else:
+            _LOGGER.error(f"Unknown response state: ok={resp.ok}, errors={resp.errors}")
+            if self.cur_step:
+                self.cur_step["errors"] = {"base": "unauthorised"}
+                return self.cur_step
 
-        raise AbortFlow("not_implemented")
+        raise AbortFlow("unauthorized")
 
     @staticmethod
     @callback
