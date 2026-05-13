@@ -112,6 +112,11 @@ class MatrixBotHandler:
             if event.sender == self.client.user_id:
                 continue
             
+            # Skip messages that we sent (to prevent infinite loop)
+            if event.event_id in self.sent_event_ids:
+                _LOGGER.debug(f"🔄 Пропускаем свое сообщение: {event.body}")
+                continue
+            
             # Skip empty messages
             if not event.body or not event.body.strip():
                 continue
@@ -147,7 +152,17 @@ class MatrixBotHandler:
             )
             
             if response.status_code == "M_OK":
-                _LOGGER.debug(f"📤 Отправлено в Matrix: {text}")
+                # Mark this event_id as sent by us (don't reprocess it)
+                if hasattr(response, 'event_id'):
+                    self.sent_event_ids.add(response.event_id)
+                    _LOGGER.debug(f"📤 Отправлено в Matrix: {text} (event_id: {response.event_id})")
+                else:
+                    _LOGGER.debug(f"📤 Отправлено в Matrix: {text}")
+                
+                # Clean up old event_ids to avoid memory leak
+                if len(self.sent_event_ids) > 100:
+                    self.sent_event_ids = set(list(self.sent_event_ids)[-50:])
+                
                 return True
             else:
                 _LOGGER.error(f"Ошибка отправки в Matrix: {response.status_code}")
