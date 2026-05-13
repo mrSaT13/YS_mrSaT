@@ -421,7 +421,6 @@ class YandexStationBase(MediaBrowser, RestoreEntity):
             elif RE_MUSIC_ID.match(media_id): payload = {"command": "playMusic", "id": media_id, "type": media_type}
             else: payload = None
             if not payload: _LOGGER.warning(f"Unsupported local media: {media_id} {media_type}"); return
-            # Safe Glagol send
             try: await self.glagol.send(payload)
             except Exception as e: _LOGGER.error(f"Glagol send failed: {e}")
         else:
@@ -435,7 +434,6 @@ class YandexStationBase(MediaBrowser, RestoreEntity):
                 media_id = utils.fix_cloud_text(media_id)
                 await self.quasar.send(self.device, media_id)
             elif media_type in ("music", "track", "album", "playlist", "artist"):
-                # FIX: Cloud mode now routes music types to voice command fallback
                 await self.quasar.send(self.device, f"включи {media_id}")
             elif media_type == "brightness":
                 await self._set_brightness(media_id); return

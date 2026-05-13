@@ -44,6 +44,7 @@ def parse_scenario(data: dict) -> dict:
     result = {k: v for k, v in data.items() if k in ("name", "icon", "steps", "effective_time", "settings")}
     result["triggers"] = [parse_trigger(i) for i in data["triggers"]]
     return result
+
 def parse_trigger(data: dict) -> dict:
     result = {k: v for k, v in data.items() if k == "filters"}
     value = data["trigger"]["value"]
@@ -52,12 +53,14 @@ def parse_trigger(data: dict) -> dict:
         value["device_id"] = data["trigger"]["value"]["device"]["id"]
     result["trigger"] = {"type": data["trigger"]["type"], "value": value}
     return result
+
 def parse_device(data: dict) -> dict:
     return {"id": data["id"], "capabilities": [{"type": i["type"], "state": i["state"]} for i in data["capabilities"]], "directives": data["directives"]}
 
 def scenario_speaker_tts(name: str, trigger: str, device_id: str, text: str) -> dict:
     return {"name": name, "icon": "home", "triggers": [{"trigger": {"type": "scenario.trigger.voice", "value": trigger}}],
             "steps": [{"type": "scenarios.steps.actions.v2", "parameters": {"items": [{"id": device_id, "type": "step.action.item.device", "value": {"id": device_id, "item_type": "device", "capabilities": [{"type": "devices.capabilities.quasar", "state": {"instance": "tts", "value": {"text": text}}}]}}]}}]}
+
 def scenario_speaker_action(name: str, trigger: str, device_id: str, action: str) -> dict:
     return {"name": name, "icon": "home", "triggers": [{"trigger": {"type": "scenario.trigger.voice", "value": trigger}}],
             "steps": [{"type": "scenarios.steps.actions.v2", "parameters": {"items": [{"id": device_id, "type": "step.action.item.device", "value": {"id": device_id, "item_type": "device", "capabilities": [{"type": "devices.capabilities.quasar.server_action", "state": {"instance": "text_action", "value": action}}]}}]}}]}
@@ -122,8 +125,7 @@ class YandexQuasar(Dispatcher):
         try:
             resp = await _safe_response_json(r)
             self.house_info = resp.get("house_info")
-            if households := resp.get("households"):
-                self.households = households
+            if households := resp.get("households"): self.households = households
             devices = resp.get("devices")
             if not isinstance(devices, list):
                 r2 = await self.session.get("https://api.iot.yandex.net/v1.0/user/devices", headers=self._official_headers())
