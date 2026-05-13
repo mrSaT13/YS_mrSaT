@@ -26,7 +26,8 @@ from .core.quasar_info import QUASAR_INFO
 from .core.yandex_glagol import YandexGlagol
 from .core.yandex_music import get_file_info
 from .core.yandex_quasar import YandexQuasar
-from .hass import shopping_list
+from .core.yandex_station import YandexModule, YandexStation
+from .hass import hass_utils, shopping_list
 
 _LOGGER = logging.getLogger(__name__)
 RE_MUSIC_ID = re.compile(r"^\d+(:\d+)?$")
@@ -62,6 +63,22 @@ MEDIA_DEFAULT = [
 ]
 SOURCE_STATION = "Станция"
 SOURCE_HDMI = "HDMI"
+
+
+async def async_setup_entry(hass, entry, async_add_entities):
+    """Set up Yandex Station media player entities."""
+    quasar: YandexQuasar = hass.data[DOMAIN][entry.unique_id]
+
+    # Add Yandex stations and modules
+    entities = []
+    for speaker in quasar.speakers:
+        speaker["entity"] = entity = YandexStation(quasar, speaker)
+        entities.append(entity)
+    for module in quasar.modules:
+        module["entity"] = entity = YandexModule(quasar, module)
+        entities.append(entity)
+    async_add_entities(entities, True)
+
 
 class YandexSource(BrowseMediaSource):
     def __init__(self, **kwargs):
