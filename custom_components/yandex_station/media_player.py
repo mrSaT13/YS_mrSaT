@@ -22,11 +22,11 @@ from homeassistant.helpers.template import Template
 from homeassistant.util import slugify
 from . import stream, utils
 from .core.const import DATA_CONFIG, DOMAIN
-from .quasar_info import QUASAR_INFO
-from .yandex_glagol import YandexGlagol
-from .yandex_music import get_file_info
-from .yandex_quasar import YandexQuasar
-from ..hass import shopping_list
+from .core.quasar_info import QUASAR_INFO
+from .core.yandex_glagol import YandexGlagol
+from .core.yandex_music import get_file_info
+from .core.yandex_quasar import YandexQuasar
+from .hass import shopping_list
 
 _LOGGER = logging.getLogger(__name__)
 RE_MUSIC_ID = re.compile(r"^\d+(:\d+)?$")
