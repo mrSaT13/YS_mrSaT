@@ -3,7 +3,7 @@ from homeassistant.components.binary_sensor import (
     BinarySensorEntity,
 )
 
-from .core.entity import YandexCustomEntity
+from .core.entity import YandexCustomEntity, YandexEntity
 from .hass import hass_utils
 
 INCLUDE_CAPABILITIES = ("devices.capabilities.lock",)
@@ -20,12 +20,49 @@ async def async_setup_entry(hass, entry, async_add_entities):
         for instance in device["capabilities"]:
             if instance["type"] in INCLUDE_CAPABILITIES:
                 entities.append(YandexBinarySensor(quasar, device, instance))
+        
+        # Добавляем диагностические сенсоры для каждой Станции
+        if device.get("type", "").startswith("devices.types.smart_speaker"):
+             entities.append(YandexCloudStatusSensor(quasar, device))
+             entities.append(YandexLocalStatusSensor(quasar, device))
 
     async_add_entities(entities)
 
 
 # noinspection PyAbstractClass
 class YandexBinarySensor(BinarySensorEntity, YandexCustomEntity):
+# ... существующий код ...
+
+class YandexCloudStatusSensor(BinarySensorEntity, YandexEntity):
+    """Сенсор статуса облачного подключения."""
+    _attr_name = "Cloud Connection"
+    _attr_device_class = BinarySensorDeviceClass.CONNECTIVITY
+
+    def __init__(self, quasar, device):
+        super().__init__(quasar, device)
+        self._attr_unique_id += "_cloud"
+
+    @property
+    def is_on(self) -> bool:
+        return bool(self.quasar.session.x_token)
+
+class YandexLocalStatusSensor(BinarySensorEntity, YandexEntity):
+    """Сенсор статуса локального (Glagol) подключения."""
+    _attr_name = "Local Connection"
+    _attr_device_class = BinarySensorDeviceClass.CONNECTIVITY
+
+    def __init__(self, quasar, device):
+        super().__init__(quasar, device)
+        self._attr_unique_id += "_local"
+
+    @property
+    def is_on(self) -> bool:
+        # Пытаемся найти объект Станции и проверить его glagol
+        for speaker in self.quasar.speakers:
+            if speaker["id"] == self.device["id"]:
+                if entity := speaker.get("entity"):
+                    return entity.glagol and entity.glagol.ws and not entity.glagol.ws.closed
+        return False
 
     def internal_init(self, capabilities: dict, properties: dict):
         # {'access_methods': None, 'instance': 'lock', 'retrievable': True, 'values': ['closed', 'open']}

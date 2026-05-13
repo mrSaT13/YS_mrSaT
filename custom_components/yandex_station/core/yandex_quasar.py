@@ -274,14 +274,33 @@ class YandexQuasar(Dispatcher):
             r.close()
 
     async def _official_list_devices(self) -> list[dict]:
+        """Fetch devices and home info from IoT API."""
         r = await self.session.get(
-            "https://api.iot.yandex.net/v1.0/user/devices",
+            "https://api.iot.yandex.net/v1.0/user/info",
             headers=self._official_headers(),
             timeout=aiohttp.ClientTimeout(total=30, sock_connect=10, sock_read=20),
         )
         try:
             resp = await _safe_response_json(r)
+            
+            # Сохраняем информацию о домах
+            self.house_info = resp.get("house_info")
+            if households := resp.get("households"):
+                self.households = households
+                _LOGGER.debug(f"Loaded {len(households)} households")
+            
             devices = resp.get("devices")
+            if not isinstance(devices, list):
+                # Fallback to /devices if /info failed or returned unexpected format
+                _LOGGER.debug("Falling back to /devices endpoint")
+                r2 = await self.session.get(
+                    "https://api.iot.yandex.net/v1.0/user/devices",
+                    headers=self._official_headers(),
+                )
+                resp2 = await _safe_response_json(r2)
+                devices = resp2.get("devices")
+                r2.close()
+
             if not isinstance(devices, list):
                 raise Exception(f"Official list response without devices: {resp}")
             return devices
@@ -347,13 +366,21 @@ class YandexQuasar(Dispatcher):
             merged = {**prev, **listed_device, **queried_device}
             merged.setdefault("item_type", "device")
 
+            # Расширенная обработка информации о комнате и доме
             room = merged.get("room")
             if isinstance(room, dict):
-                room_name = room.get("name")
-                if room_name:
-                    merged["room_name"] = room_name
+                merged["room_id"] = room.get("id")
+                merged["room_name"] = room.get("name")
             elif isinstance(room, str) and room:
                 merged["room_name"] = room
+
+            # Добавляем информацию о доме (household)
+            household_id = merged.get("household_id")
+            if household_id and hasattr(self, 'households'):
+                for h in self.households:
+                    if h.get("id") == household_id:
+                        merged["house_name"] = h.get("name")
+                        break
 
             merged_devices.append(merged)
 
@@ -374,12 +401,12 @@ class YandexQuasar(Dispatcher):
         _LOGGER.debug(f"x_token present: {bool(self.session.x_token)}")
         
         # Режим работы API. По умолчанию Legacy, так как Official API v1.0 требует особых прав (OAuth scope).
-        use_official = False 
+        use_official = True 
 
         try:
             if use_official:
                 try:
-                    _LOGGER.info("📡 Trying official API v1.0...")
+                    _LOGGER.info("📡 Trying official API v1.0 (info + household)...")
                     listed = await self._official_list_devices()
                     queried = await self._official_query_devices(
                         [d["id"] for d in listed if d.get("id")]

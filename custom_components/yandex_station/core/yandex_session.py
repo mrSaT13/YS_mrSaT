@@ -208,6 +208,17 @@ class YandexSession(BasicSession):
 
         self._update_listeners = []
 
+    def get_cookies_base64(self) -> str:
+        """Serialize session cookies to base64 string for persistence."""
+        try:
+            # We only need cookies from .yandex.ru and related
+            cookies = self._session.cookie_jar._cookies
+            raw = pickle.dumps(cookies)
+            return base64.b64encode(raw).decode()
+        except Exception as e:
+            _LOGGER.error(f"Failed to serialize cookies: {e}")
+            return ""
+
     def _load_cookies_from_base64(self, cookie: str):
         try:
             raw = base64.b64decode(cookie)
@@ -697,6 +708,10 @@ class YandexSession(BasicSession):
                         return await self.request(method, url, retry - 1, **kwargs)
             # 403 Forbidden
             elif r.status == 403:
+                # Если 403 на Glagol, попробуем уменьшить кулдаун до 60с для тестов
+                host = urlparse(url).netloc
+                cooldown = 60 if "/glagol/token" in url else 300
+                
                 # Для не-GET Quasar/Alice: сбрасываем CSRF и ретраим 1 раз до cooldown
                 if (is_quasar or is_alice) and method.lower() != "get" and self.csrf_token:
                     _LOGGER.debug("Got 403 on non-GET Quasar, dropping CSRF and retrying")
@@ -707,7 +722,7 @@ class YandexSession(BasicSession):
                 r.close()
                 _LOGGER.warning(f"403 Forbidden for {url}")
                 host = urlparse(url).netloc
-                cooldown = 300  # 5 минут
+                # cooldown set above
                 self._forbidden_cooldowns[host] = time.time() + cooldown
                 _LOGGER.warning(f"Set 403 cooldown for {host} ({cooldown}s)")
                 raise Exception(f"{url} returned 403")
