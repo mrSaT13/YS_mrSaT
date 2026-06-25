@@ -27,6 +27,7 @@ class YandexGlagol:
     update_handler: Callable = None
 
     waiters: Dict[str, Future] = {}
+    last_send_text: str = None
 
     def __init__(self, session: YandexSession, device: dict):
         self.session = session
@@ -246,6 +247,10 @@ class YandexGlagol:
 
     async def send(self, payload: dict) -> Optional[dict]:
         _LOGGER.debug(f"{self.name} => local | {payload}")
+
+        # Store last sendText for MA fallback
+        if payload.get("command") == "sendText":
+            self.last_send_text = payload.get("text", "")
 
         request_id = str(uuid.uuid4())
 

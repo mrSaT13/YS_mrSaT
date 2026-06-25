@@ -529,7 +529,20 @@ class YandexStationBase(MediaBrowser, RestoreEntity):
 
         # Debug: log vinsResponse if present
         if vins := data.get("vinsResponse"):
-            _LOGGER.info(f"VINS RESPONSE for {self.name}: {str(vins)[:500]}")
+            resp = vins.get("response", {})
+            texts = []
+            for d in resp.get("directives", []):
+                p = d.get("payload", {})
+                for k in ("text", "tts_text", "phrase"):
+                    if v := p.get(k):
+                        texts.append(f"{k}={v}")
+            cards = resp.get("cards", [])
+            if cards:
+                texts.append(f"cards={[c.get('text','') for c in cards]}")
+            speech = resp.get("output_speech", {})
+            if speech:
+                texts.append(f"speech={speech.get('text','')}")
+            _LOGGER.info(f"VINS for {self.name}: {'; '.join(texts) or str(vins)[:500]}")
 
         # skip same state
         if self.local_state == state:
@@ -669,64 +682,69 @@ class YandexStationBase(MediaBrowser, RestoreEntity):
             if not bridge.is_enabled():
                 return
 
-            # Extract text from vinsResponse
-            response = vins.get("payload", vins).get("response", vins)
-            card = response.get("card", {})
-            output_speech = response.get("output_speech", {})
-            text = card.get("text", "") or output_speech.get("text", "")
+            # Extract all text from response
+            response = vins.get("response", {})
+            texts = []
+            for directive in response.get("directives", []):
+                payload = directive.get("payload", {})
+                for key in ("text", "tts_text", "phrase"):
+                    if val := payload.get(key):
+                        texts.append(val)
+            for card in response.get("cards", []):
+                if text := card.get("text"):
+                    texts.append(text)
+            if speech := response.get("output_speech"):
+                if text := speech.get("text"):
+                    texts.append(text)
 
-            if not text:
+            if not texts:
                 return
 
-            # Check if response indicates music playback failure
-            fail_phrases = [
-                "не могу", "нет подписки", "подключите", "платн",
-                "не удалось", "ошибк", "не доступн", "не найд",
-                "превью", " preview",
-            ]
-            text_lower = text.lower()
-            is_music_fail = any(p in text_lower for p in fail_phrases)
+            full_text = " ".join(texts).lower()
 
-            # Also check if it's a music-related response
-            music_phrases = [
+            # Check for music failure
+            is_fail = any(p in full_text for p in [
+                "не могу", "нет подписки", "подключите", "платн",
+                "не удалось", "ошибк", "не доступн",
+            ])
+            is_music = any(p in full_text for p in [
                 "воспроизвест", "включ", "музык", "трек", "песн",
                 "исполнител", "артист", "альбом", "плейлист",
-            ]
-            is_music_related = any(p in text_lower for p in music_phrases)
+                "проигр", "запуст",
+            ])
 
-            if not (is_music_fail and is_music_related):
+            if not (is_fail and is_music):
                 return
 
-            # Try to extract artist/track from the request
-            # The vinsResponse might contain the original query
-            query_text = vins.get("query", "") or text
+            # Get query from last sendText
+            query = ""
+            if hasattr(self, 'glagol') and self.glagol:
+                query = getattr(self.glagol, 'last_send_text', "") or ""
 
-            # Try to parse artist from response text
-            # Common patterns: "Не могу воспроизвести X by Y"
-            import re
-            artist_match = re.search(
-                r"(?:воспроизвести|включить|играть)\s+(.+?)(?:\s+от\s+|\s+by\s+)",
-                text_lower,
-            )
-            if artist_match:
-                artist = artist_match.group(1).strip()
-            else:
-                # Try to get from subtitle (artist name from previous context)
-                artist = ""
+            if not query:
+                # Try extracting from response text
+                import re
+                m = re.search(r"(?:воспроизвести|включить|играть|проиграть)\s+(.+)", full_text)
+                if m:
+                    query = m.group(1).strip()
 
-            if not artist:
-                # Last resort: try to extract any meaningful name
-                # from the response text
-                _LOGGER.debug(f"MA vins: couldn't extract artist from: {text}")
+            if not query:
+                _LOGGER.debug("MA vins: music failure detected but no query")
                 return
 
-            _LOGGER.info(f"MA vins: detected music failure for '{artist}', searching MA")
+            # Strip "включи " prefix
+            for prefix in ("включи ", "воспроизведи ", "играй ", "проиграй "):
+                if query.startswith(prefix):
+                    query = query[len(prefix):]
+                    break
+
+            _LOGGER.info(f"MA vins: music failure, searching for '{query}'")
 
             import asyncio
             asyncio.create_task(
                 bridge.search_and_play(
                     self.entity_id,
-                    artist=artist,
+                    artist=query,
                     request_type="artist",
                     announce=True,
                 )
