@@ -245,12 +245,94 @@ class YandexGlagol:
         except Exception:
             pass
 
+    def _trigger_ma_search(self, text: str):
+        """Trigger MA search if text looks like a music request."""
+        text_lower = text.lower()
+
+        music_keywords = [
+            "включи", "включай", "играй", "проиграй", "запусти",
+            "поставь", "воспроизведи", "музык", "трек", "песню",
+            "песня", "артист", "исполнител", "альбом", "плейлист",
+            "радио", "radio",
+        ]
+
+        if not any(kw in text_lower for kw in music_keywords):
+            return
+
+        query = text_lower
+        for kw in ["включи", "включай", "играй", "проиграй", "запусти",
+                     "поставь", "воспроизведи", "музыку", "трек", "песню",
+                     "песня", "артиста", "исполнителя", "альбом", "плейлист",
+                     "радио"]:
+            query = query.replace(kw, "")
+        query = query.strip()
+
+        if not query or len(query) < 2:
+            return
+
+        _LOGGER.info(f"MA: music request '{query}' — resolving via Yandex search")
+
+        # Resolve name via Yandex Music API, then search MA
+        try:
+            entity = self.device.get("entity")
+            if entity and entity.hass:
+                import asyncio
+                asyncio.create_task(self._resolve_and_search(entity, query))
+        except Exception as e:
+            _LOGGER.debug(f"MA resolve failed: {e}")
+
+    async def _resolve_and_search(self, entity, raw_query: str):
+        """Resolve query via Yandex Music API, then search MA."""
+        try:
+            from ..hass.music_assistant_bridge import get_bridge
+            bridge = get_bridge(entity.hass)
+            if not bridge.is_enabled():
+                return
+
+            # Search Yandex Music to resolve the correct artist name
+            resolved_artist = raw_query
+            resolved_track = None
+
+            try:
+                r = await self.session.get(
+                    "https://api.music.yandex.net/search",
+                    params={"text": raw_query, "type": "track", "page": 0},
+                    timeout=10,
+                )
+                resp = await r.json()
+                tracks = resp.get("result", {}).get("tracks", {}).get("results", [])
+                if tracks:
+                    track = tracks[0]
+                    resolved_artist = track["artists"][0]["name"] if track.get("artists") else raw_query
+                    resolved_track = track.get("title", "")
+                    _LOGGER.info(f"MA: resolved '{raw_query}' → artist='{resolved_artist}', track='{resolved_track}'")
+            except Exception as e:
+                _LOGGER.debug(f"Yandex search failed: {e}, using raw query")
+
+            # Search MA with resolved name
+            await bridge.search_and_play(
+                entity.entity_id,
+                artist=resolved_artist,
+                track=resolved_track,
+                request_type="track" if resolved_track else "artist",
+                announce=True,
+            )
+
+        except Exception as e:
+            _LOGGER.debug(f"MA resolve_and_search failed: {e}")
+
     async def send(self, payload: dict) -> Optional[dict]:
         _LOGGER.debug(f"{self.name} => local | {payload}")
 
-        # Store last sendText for MA fallback
-        if payload.get("command") == "sendText":
-            self.last_send_text = payload.get("text", "")
+        # Store last sendText for MA fallback (never block the command)
+        try:
+            if payload.get("command") == "sendText":
+                self.last_send_text = payload.get("text", "")
+                self._trigger_ma_search(payload.get("text", ""))
+            # Skip MA for external commands (existing hack)
+            self._ma_skip_next = payload.get("command") == "externalCommandBypass"
+        except Exception:
+            pass
 
         request_id = str(uuid.uuid4())
 

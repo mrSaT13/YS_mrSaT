@@ -761,34 +761,54 @@ class YandexStationBase(MediaBrowser, RestoreEntity):
             bridge = get_bridge(self.hass)
             if not bridge.is_enabled():
                 return
-            if not bridge.is_ma_available():
-                _LOGGER.debug("MA fallback: MA not available")
-                return
 
-            # Get artist and track from playerState
+            # Get artist and track from playerState (resolved by Alice)
             request = bridge.parse_voice_request(player_state)
-            _LOGGER.debug(f"MA fallback: parsed request={request}")
 
             # Only intercept music tracks
             if request["type"] not in ("track", "artist", "album"):
-                _LOGGER.debug(f"MA fallback: skipping type={request['type']}")
                 return
 
             # Skip if no info
             if not request["query"]:
-                _LOGGER.debug("MA fallback: no query")
                 return
 
             # Check if this is a preview or error (duration <= 60s)
             duration = player_state.get("duration", 0)
             if duration and duration > 60000:
-                _LOGGER.debug(f"MA fallback: full track ({duration}ms), skipping")
+                # Full track playing - clear pending query
+                glagol = getattr(self, 'glagol', None)
+                if glagol:
+                    glagol._ma_pending_query = None
                 return
+
+            # Use the CORRECT name from playerState (resolved by Alice)
+            artist = request["artist"]
+            track = request["track"]
 
             _LOGGER.info(
                 f"MA fallback: {request['type']} for "
-                f"{request['query']} (duration={duration}ms)"
+                f"'{artist}' - '{track}' (duration={duration}ms)"
             )
+
+            import asyncio
+            asyncio.create_task(
+                bridge.search_and_play(
+                    self.entity_id,
+                    artist=artist,
+                    track=track,
+                    request_type=request["type"],
+                    announce=True,
+                )
+            )
+
+            # Clear pending query
+            glagol = getattr(self, 'glagol', None)
+            if glagol:
+                glagol._ma_pending_query = None
+
+        except Exception as e:
+            _LOGGER.debug(f"MA fallback check failed: {e}")
 
             import asyncio
             asyncio.create_task(
