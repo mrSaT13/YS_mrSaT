@@ -527,6 +527,10 @@ class YandexStationBase(MediaBrowser, RestoreEntity):
         state = data["state"]
         state.pop("timeSinceLastVoiceActivity", None)
 
+        # Debug: log vinsResponse if present
+        if vins := data.get("vinsResponse"):
+            _LOGGER.info(f"VINS RESPONSE for {self.name}: {str(vins)[:500]}")
+
         # skip same state
         if self.local_state == state:
             return
@@ -651,6 +655,85 @@ class YandexStationBase(MediaBrowser, RestoreEntity):
         # Music Assistant bridge: detect preview/error and search in MA
         if player_state and self.hass:
             self._check_music_assistant_fallback(player_state)
+
+        # Also check vinsResponse for "can't play" responses
+        if vins := data.get("vinsResponse"):
+            self._check_vins_music_response(vins, data)
+
+    def _check_vins_music_response(self, vins: dict, data: dict):
+        """Check if vinsResponse indicates a failed music playback."""
+        try:
+            from ..hass.music_assistant_bridge import get_bridge
+
+            bridge = get_bridge(self.hass)
+            if not bridge.is_enabled():
+                return
+
+            # Extract text from vinsResponse
+            response = vins.get("payload", vins).get("response", vins)
+            card = response.get("card", {})
+            output_speech = response.get("output_speech", {})
+            text = card.get("text", "") or output_speech.get("text", "")
+
+            if not text:
+                return
+
+            # Check if response indicates music playback failure
+            fail_phrases = [
+                "не могу", "нет подписки", "подключите", "платн",
+                "не удалось", "ошибк", "не доступн", "не найд",
+                "превью", " preview",
+            ]
+            text_lower = text.lower()
+            is_music_fail = any(p in text_lower for p in fail_phrases)
+
+            # Also check if it's a music-related response
+            music_phrases = [
+                "воспроизвест", "включ", "музык", "трек", "песн",
+                "исполнител", "артист", "альбом", "плейлист",
+            ]
+            is_music_related = any(p in text_lower for p in music_phrases)
+
+            if not (is_music_fail and is_music_related):
+                return
+
+            # Try to extract artist/track from the request
+            # The vinsResponse might contain the original query
+            query_text = vins.get("query", "") or text
+
+            # Try to parse artist from response text
+            # Common patterns: "Не могу воспроизвести X by Y"
+            import re
+            artist_match = re.search(
+                r"(?:воспроизвести|включить|играть)\s+(.+?)(?:\s+от\s+|\s+by\s+)",
+                text_lower,
+            )
+            if artist_match:
+                artist = artist_match.group(1).strip()
+            else:
+                # Try to get from subtitle (artist name from previous context)
+                artist = ""
+
+            if not artist:
+                # Last resort: try to extract any meaningful name
+                # from the response text
+                _LOGGER.debug(f"MA vins: couldn't extract artist from: {text}")
+                return
+
+            _LOGGER.info(f"MA vins: detected music failure for '{artist}', searching MA")
+
+            import asyncio
+            asyncio.create_task(
+                bridge.search_and_play(
+                    self.entity_id,
+                    artist=artist,
+                    request_type="artist",
+                    announce=True,
+                )
+            )
+
+        except Exception as e:
+            _LOGGER.debug(f"MA vins check failed: {e}")
 
     def _check_music_assistant_fallback(self, player_state: dict):
         """Check if MA fallback is needed when speaker plays preview/error."""
