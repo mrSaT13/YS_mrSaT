@@ -48,7 +48,7 @@ class Protobuf:
                 v = self.read_bytes()
                 try:
                     v = Protobuf(v).read_dict()
-                except:
+                except Exception:
                     pass
             elif typ == 5:  # I32
                 v = self.read(4)

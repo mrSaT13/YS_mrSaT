@@ -185,5 +185,5 @@ class StreamView(HomeAssistantView):
                     _LOGGER.debug(f"Streaming timeout: {repr(e)}")
 
                 return response
-        except:
+        except Exception:
             pass

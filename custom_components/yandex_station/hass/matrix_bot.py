@@ -27,7 +27,7 @@ class MatrixBotHandler:
         self.access_token = config.get("access_token")
         self.client = None
         self.sync_token = None
-        self.sent_event_ids = set()  # Отправленные нами event_id - не обрабатываем их снова!
+        self.sent_event_ids: list = []  # Sent by us - don't process again
 
     async def async_start(self):
         """Start Matrix bot client."""
@@ -42,7 +42,7 @@ class MatrixBotHandler:
             self.client = nio.AsyncClient(self.server_url)
             self.client.access_token = self.access_token
             
-            _LOGGER.info(f"🤖 Matrix бот инициализирован: {self.server_url}")
+            _LOGGER.info(f"Matrix bot initialized: {self.server_url}")
             
             # Start sync loop
             self.hass.create_task(self._sync_loop())
@@ -58,7 +58,7 @@ class MatrixBotHandler:
         if self.client:
             try:
                 await self.client.close()
-                _LOGGER.info("🤖 Matrix бот остановлен")
+                _LOGGER.info("Matrix bot stopped")
             except Exception as e:
                 _LOGGER.error(f"Ошибка при остановке Matrix: {e}")
 
@@ -66,10 +66,14 @@ class MatrixBotHandler:
         """Sync messages from Matrix room."""
         await asyncio.sleep(2)  # Wait for client initialization
         
+        retry_delay = 1
+        max_delay = 60
+        
         while self.client:
             try:
                 if not self.client or not self.room_id:
                     await asyncio.sleep(5)
+                    retry_delay = 1
                     continue
                 
                 response = await self.client.sync(
@@ -81,10 +85,12 @@ class MatrixBotHandler:
                 # Check if sync was successful (SyncResponse doesn't have status_code)
                 if not hasattr(response, 'next_batch'):
                     _LOGGER.warning(f"Matrix sync failed: {response}")
-                    await asyncio.sleep(5)
+                    await asyncio.sleep(min(retry_delay, max_delay))
+                    retry_delay = min(retry_delay * 2, max_delay)
                     continue
                 
                 self.sync_token = response.next_batch
+                retry_delay = 1  # Reset on success
                 
                 # Process room messages
                 for room_id, room_info in response.rooms.join.items():
@@ -97,8 +103,9 @@ class MatrixBotHandler:
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                _LOGGER.error(f"Ошибка в sync loop: {e}")
-                await asyncio.sleep(5)
+                _LOGGER.error(f"Error in sync loop: {e}")
+                await asyncio.sleep(min(retry_delay, max_delay))
+                retry_delay = min(retry_delay * 2, max_delay)
 
     async def _process_room_messages(self, room_id: str, events: list):
         """Process incoming room messages."""
@@ -114,14 +121,14 @@ class MatrixBotHandler:
             
             # Skip messages that we sent (to prevent infinite loop)
             if event.event_id in self.sent_event_ids:
-                _LOGGER.debug(f"🔄 Пропускаем свое сообщение: {event.body}")
+                _LOGGER.debug(f"Skipping own message: {event.body}")
                 continue
             
             # Skip empty messages
             if not event.body or not event.body.strip():
                 continue
             
-            _LOGGER.debug(f"📨 Matrix сообщение от {event.sender}: {event.body}")
+            _LOGGER.debug(f"Matrix message from {event.sender}: {event.body}")
             
             # Fire Home Assistant event
             self.hass.bus.async_fire(
@@ -154,14 +161,14 @@ class MatrixBotHandler:
             if response.status_code == "M_OK":
                 # Mark this event_id as sent by us (don't reprocess it)
                 if hasattr(response, 'event_id'):
-                    self.sent_event_ids.add(response.event_id)
-                    _LOGGER.debug(f"📤 Отправлено в Matrix: {text} (event_id: {response.event_id})")
+                    self.sent_event_ids.append(response.event_id)
+                    _LOGGER.debug(f"Sent to Matrix: {text} (event_id: {response.event_id})")
                 else:
-                    _LOGGER.debug(f"📤 Отправлено в Matrix: {text}")
-                
+                    _LOGGER.debug(f"Sent to Matrix: {text}")
+
                 # Clean up old event_ids to avoid memory leak
                 if len(self.sent_event_ids) > 100:
-                    self.sent_event_ids = set(list(self.sent_event_ids)[-50:])
+                    self.sent_event_ids = self.sent_event_ids[-50:]
                 
                 return True
             else:
@@ -214,5 +221,5 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     
     hass.bus.async_listen(EVENT_MATRIX_TEXT, handle_matrix_text)
     
-    _LOGGER.info("✅ Matrix bot интеграция загружена")
+    _LOGGER.info("Matrix bot integration loaded")
     return True

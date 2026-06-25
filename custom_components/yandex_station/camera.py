@@ -31,7 +31,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
 
     entities = []
 
-    for quasar, device, config in hass_utils.incluce_devices(hass, entry):
+    for quasar, device, config in hass_utils.include_devices(hass, entry):
         if instances := device.get("capabilities"):
             for instance in instances:
                 if instance["type"] == "devices.capabilities.video_stream":

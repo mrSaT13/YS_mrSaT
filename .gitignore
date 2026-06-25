@@ -1,4 +1,15 @@
 __pycache__/
+*.pyc
+*.pyo
 .idea/
+.vscode/
 .homeassistant/
+.env
+*.pickle
+*.bak
+backups/
 tests/test_0.py
+apply-yandex-station-fix.sh
+FIX-README.md
+media_player(new).py
+config_flow (2).py

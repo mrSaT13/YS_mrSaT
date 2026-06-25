@@ -10,7 +10,7 @@ INCLUDE_CAPABILITIES = ("devices.capabilities.custom.button",)
 async def async_setup_entry(hass, entry, async_add_entities):
     entities = []
 
-    for quasar, device, config in hass_utils.incluce_devices(hass, entry):
+    for quasar, device, config in hass_utils.include_devices(hass, entry):
         # get on_off capability from intercom
         if device["type"] == "devices.types.openable.intercom":
             for instance in device["capabilities"]:

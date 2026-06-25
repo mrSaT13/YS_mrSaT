@@ -233,7 +233,7 @@ async def get_media_payload(session: YandexSession, media_id: str) -> dict | Non
                     resp = await r.json()
                     return play_video_by_descriptor("kinopoisk", resp["uuid"])
 
-                except:
+                except Exception:
                     return None
 
             elif k == "bookmate":
@@ -248,7 +248,7 @@ async def get_media_payload(session: YandexSession, media_id: str) -> dict | Non
                         "type": "album",
                         "id": resp["album_id"],
                     }
-                except:
+                except Exception:
                     return None
 
     if ext := await stream.get_content_type(session._session, media_id):
@@ -321,7 +321,7 @@ async def get_zeroconf_singleton(hass: HomeAssistant):
         from homeassistant.components.zeroconf import async_get_instance
 
         return await async_get_instance(hass)
-    except:
+    except ImportError:
         from zeroconf import Zeroconf
 
         return Zeroconf()
@@ -373,8 +373,8 @@ async def get_playlist_uid(
         )
         resp = await r.json()
         return resp["result"]["owner"]["uid"]
-    except:
-        return None
+                except Exception:
+                    return None
 
 
 def dump_capabilities(data: dict) -> dict:
@@ -474,6 +474,6 @@ def get_entity(hass: HomeAssistant, entity_id: str) -> Entity | None:
     try:
         ec: EntityComponent = hass.data["entity_components"]["media_player"]
         return next(e for e in ec.entities if e.entity_id == entity_id)
-    except:
+    except (StopIteration, KeyError):
         pass
     return None

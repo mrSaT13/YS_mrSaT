@@ -20,7 +20,7 @@ INCLUDE_CAPABILITIES = ("devices.capabilities.on_off", "devices.capabilities.tog
 async def async_setup_entry(hass, entry, async_add_entities):
     entities = []
 
-    for quasar, device, config in hass_utils.incluce_devices(hass, entry):
+    for quasar, device, config in hass_utils.include_devices(hass, entry):
         # compare device type
         if device["type"] in INCLUDE_TYPES:
             entities.append(YandexSwitch(quasar, device))

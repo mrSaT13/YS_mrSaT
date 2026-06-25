@@ -45,7 +45,7 @@ def get_diagnostics(hass: HomeAssistant, config_entry: ConfigEntry) -> dict:
         errors = repr(e)
 
     include = [
-        device["id"] for _, device, _ in hass_utils.incluce_devices(hass, config_entry)
+        device["id"] for _, device, _ in hass_utils.include_devices(hass, config_entry)
     ]
 
     return {"errors": errors, "include": include}

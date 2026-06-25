@@ -359,7 +359,7 @@ class YandexQuasar(Dispatcher):
                 for d in resp["devices"]
             ]
 
-        except:
+        except Exception:
             _LOGGER.exception("Load local speakers")
             return None
 
@@ -391,9 +391,9 @@ class YandexQuasar(Dispatcher):
         if resp.get("status") == "ok":
             # Log device state including properties and capabilities
             if properties := resp.get("properties"):
-                _LOGGER.debug(f"🎵 Свойства устройства {device['name']}: {json.dumps(properties, ensure_ascii=False, indent=2)[:1000]}")
+                _LOGGER.debug(f"Device properties {device['name']}: {json.dumps(properties, ensure_ascii=False, indent=2)[:1000]}")
             if capabilities := resp.get("capabilities"):
-                _LOGGER.debug(f"📱 Возможности {device['name']}: {json.dumps([c.get('type') for c in capabilities], ensure_ascii=False)}")
+                _LOGGER.debug(f"Device capabilities {device['name']}: {json.dumps([c.get('type') for c in capabilities], ensure_ascii=False)}")
         return resp
 
     async def device_action(self, device: dict, instance: str, value, relative=False):
@@ -485,7 +485,7 @@ class YandexQuasar(Dispatcher):
             r = await self.session.get("https://quasar.yandex.ru/devices_online_stats")
             resp = await r.json()
             assert resp["status"] == "ok", resp
-        except:
+        except Exception:
             return
         finally:
             self.online_updated.set()

@@ -156,7 +156,7 @@ class YandexStationFlowHandler(ConfigFlow, domain=DOMAIN):
             
             # Log which auth method was used
             login_type = getattr(self, "_login_method", "unknown")
-            _LOGGER.info(f"✓ Успешная авторизация через {login_type}: {resp.display_login}")
+            _LOGGER.info(f"Successful auth via {login_type}: {resp.display_login}")
             
             # set unique_id or return existing entry
             entry = await self.async_set_unique_id(resp.display_login)
@@ -199,7 +199,7 @@ class OptionsFlowHandler(OptionsFlow):
         """Show options menu."""
         return self.async_show_menu(
             step_id="init",
-            menu_options=["devices", "matrix_bot"]
+            menu_options=["devices", "matrix_bot", "music_assistant"]
         )
 
     async def async_step_devices(self, user_input: dict = None):
@@ -246,6 +246,73 @@ class OptionsFlowHandler(OptionsFlow):
             data_schema=data,
             description_placeholders={
                 "docs": "https://github.com/mrSaT13/YandexStation/blob/master/custom_components/yandex_station/hass/MATRIX_BOT.md"
+            }
+        )
+
+    async def async_step_music_assistant(self, user_input: dict = None):
+        """Configure Music Assistant integration."""
+        if user_input is not None:
+            options = dict(self.config_entry.options)
+            options["music_assistant"] = user_input
+            self.hass.config_entries.async_update_entry(
+                self.config_entry, options=options
+            )
+            await self.hass.config_entries.async_reload(self.config_entry.entry_id)
+            return self.async_abort(reason="music_assistant_configured")
+
+        defaults = self.config_entry.options.get("music_assistant", {})
+
+        # Find MA player entities
+        ma_players = {}
+        if "music_assistant" in self.hass.data:
+            ec = self.hass.data.get("entity_components", {}).get("media_player")
+            if ec:
+                for entity in ec.entities:
+                    if (
+                        hasattr(entity, "player_id")
+                        and entity.platform
+                        and entity.platform.platform_name == "music_assistant"
+                    ):
+                        ma_players[entity.entity_id] = entity.name or entity.entity_id
+
+        # Also list Yandex Station speakers
+        yandex_speakers = {}
+        from .core.const import DATA_SPEAKERS
+        speakers = self.hass.data.get(DOMAIN, {}).get(DATA_SPEAKERS, {})
+        for did, speaker in speakers.items():
+            entity = speaker.get("entity")
+            if entity and entity.hass:
+                yandex_speakers[entity.entity_id] = speaker.get("name", entity.entity_id)
+
+        data = vol.Schema({
+            vol.Required(
+                "enabled",
+                default=defaults.get("enabled", False),
+            ): bool,
+            vol.Optional(
+                "ma_player",
+                default=defaults.get("ma_player", ""),
+            ): vol.In({**{"": "Автоматически"}, **ma_players}) if ma_players else str,
+            vol.Optional(
+                "yandex_speaker",
+                default=defaults.get("yandex_speaker", ""),
+            ): vol.In({**{"": "Все колонки"}, **yandex_speakers}) if yandex_speakers else str,
+            vol.Optional(
+                "announce",
+                default=defaults.get("announce", True),
+            ): bool,
+            vol.Optional(
+                "fallback_to_similar",
+                default=defaults.get("fallback_to_similar", True),
+            ): bool,
+        })
+
+        return self.async_show_form(
+            step_id="music_assistant",
+            data_schema=data,
+            description_placeholders={
+                "ma_count": str(len(ma_players)),
+                "speaker_count": str(len(yandex_speakers)),
             }
         )
 

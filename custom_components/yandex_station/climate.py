@@ -25,13 +25,13 @@ INCLUDE_TYPES = (
 async def async_setup_entry(hass, entry, async_add_entities):
     async_add_entities(
         YandexClimate(quasar, device, config)
-        for quasar, device, config in hass_utils.incluce_devices(hass, entry)
+        for quasar, device, config in hass_utils.include_devices(hass, entry)
         if device["type"] in INCLUDE_TYPES
     )
     # this should be fixed someday
     async_add_entities(
         YandexRemoteCarSeat(quasar, device, config)
-        for quasar, device, config in hass_utils.incluce_devices(hass, entry)
+        for quasar, device, config in hass_utils.include_devices(hass, entry)
         if device["type"] == "devices.types.remote_car.seat"
     )
 
@@ -162,14 +162,14 @@ class YandexClimate(ClimateEntity, YandexEntity):
     def on_track_temperature(self, value):
         try:
             self._attr_current_temperature = float(value)
-        except:
+        except (ValueError, TypeError):
             self._attr_current_temperature = None
         self._async_write_ha_state()
 
     def on_track_humidity(self, value):
         try:
             self._attr_current_humidity = int(value)
-        except:
+        except (ValueError, TypeError):
             self._attr_current_humidity = None
         self._async_write_ha_state()
 

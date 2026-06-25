@@ -52,7 +52,7 @@ INCLUDE_SKIP_INSTANCES = {
 }
 
 
-def incluce_devices(
+def include_devices(
     hass: HomeAssistant, config_entry: ConfigEntry
 ) -> list[tuple[YandexQuasar, dict, dict]]:
     quasar: YandexQuasar = hass.data[DOMAIN][config_entry.unique_id]
@@ -95,7 +95,7 @@ def build_include_config(device: dict) -> dict:
     }
 
 
-async def load_fake_devies(hass: HomeAssistant, quasar: YandexQuasar):
+async def load_fake_devices(hass: HomeAssistant, quasar: YandexQuasar):
     path = hass.config.path(DOMAIN + ".json")
     if not os.path.isfile(path):
         return

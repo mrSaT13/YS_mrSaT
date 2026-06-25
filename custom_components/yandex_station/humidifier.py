@@ -17,7 +17,7 @@ INCLUDE_TYPES = ("devices.types.humidifier",)
 async def async_setup_entry(hass, entry, async_add_entities):
     async_add_entities(
         YandexHumidifier(quasar, device, config)
-        for quasar, device, config in hass_utils.incluce_devices(hass, entry)
+        for quasar, device, config in hass_utils.include_devices(hass, entry)
         if device["type"] in INCLUDE_TYPES
     )
 
@@ -60,7 +60,7 @@ class YandexHumidifier(HumidifierEntity, YandexEntity):
     def on_track_template(self, value):
         try:
             self._attr_current_humidity = int(value)
-        except:
+        except (ValueError, TypeError):
             self._attr_current_humidity = None
         self._async_write_ha_state()
 

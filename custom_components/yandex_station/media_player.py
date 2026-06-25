@@ -45,7 +45,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
     # add Quasar TVs
     async_add_entities(
         YandexMediaPlayer(quasar, device, config)
-        for quasar, device, config in hass_utils.incluce_devices(hass, entry)
+        for quasar, device, config in hass_utils.include_devices(hass, entry)
         if device["type"] in INCLUDE_TYPES
     )
 
@@ -106,7 +106,7 @@ class YandexMediaPlayer(MediaPlayerEntity, YandexEntity):
         try:
             self._attr_assumed_state = False
             self._attr_state = MediaPlayerState(value)
-        except:
+        except ValueError:
             self._attr_state = None
         self._async_write_ha_state()
 

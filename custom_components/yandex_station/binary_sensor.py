@@ -16,7 +16,7 @@ ENTITY_DESCRIPTIONS = {
 async def async_setup_entry(hass, entry, async_add_entities):
     entities = []
 
-    for quasar, device, config in hass_utils.incluce_devices(hass, entry):
+    for quasar, device, config in hass_utils.include_devices(hass, entry):
         for instance in device["capabilities"]:
             if instance["type"] in INCLUDE_CAPABILITIES:
                 entities.append(YandexBinarySensor(quasar, device, instance))

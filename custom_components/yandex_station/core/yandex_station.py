@@ -278,7 +278,7 @@ class YandexStationBase(MediaBrowser, RestoreEntity):
         try:
             config, _ = await self.quasar.get_device_config(self.device)
             self.hdmi_audio = config.get("hdmiAudio", False)
-        except:
+        except Exception:
             _LOGGER.warning("Не получается получить настройки HDMI")
             return
 
@@ -310,7 +310,7 @@ class YandexStationBase(MediaBrowser, RestoreEntity):
             else:
                 config.pop("hdmiAudio", None)
             await self.quasar.set_device_config(self.device, config, version)
-        except:
+        except Exception:
             _LOGGER.warning("Не получается изменить настройки HDMI")
             return
 
@@ -482,7 +482,7 @@ class YandexStationBase(MediaBrowser, RestoreEntity):
         try:
             dialog = self.hass.data["yandex_dialogs"]
             dialog.dialogs[crc] = payload
-        except:
+        except KeyError:
             _LOGGER.warning("Компонент Яндекс Диалогов не подключен")
 
         return f"СКАЖИ НАВЫКУ {name} {crc}"
@@ -560,16 +560,16 @@ class YandexStationBase(MediaBrowser, RestoreEntity):
         self._attr_shuffle = None
 
         if player_state := state.get("playerState"):
-            _LOGGER.debug(f"🎵 PlayerState для {self.name}: title='{player_state.get('title')}', type={player_state.get('type')}, playing={state.get('playing')}")
-            
+            _LOGGER.debug(f"PlayerState for {self.name}: title='{player_state.get('title')}', type={player_state.get('type')}, playing={state.get('playing')}")
+
             # Log cover information if available
             if extra := player_state.get("extra"):
                 if cover := extra.get("coverURI"):
-                    _LOGGER.debug(f"🖼️ Обложка: {cover}")
+                    _LOGGER.debug(f"Cover: {cover}")
                 else:
-                    _LOGGER.debug(f"📭 Обложка не найдена в extra")
+                    _LOGGER.debug(f"Cover not found in extra")
             else:
-                _LOGGER.debug(f"📭 Нет extra данных (метаданные)")
+                _LOGGER.debug(f"No extra data (metadata)")
             
             if player_state["hasPrev"]:
                 self._attr_supported_features |= MediaPlayerEntityFeature.PREVIOUS_TRACK
@@ -647,6 +647,54 @@ class YandexStationBase(MediaBrowser, RestoreEntity):
 
         if self.hass:
             self.async_write_ha_state()
+
+        # Music Assistant bridge: detect preview/error and search in MA
+        if player_state and self.hass:
+            self._check_music_assistant_fallback(player_state)
+
+    def _check_music_assistant_fallback(self, player_state: dict):
+        """Check if MA fallback is needed when speaker plays preview/error."""
+        try:
+            from ..hass.music_assistant_bridge import get_bridge
+
+            bridge = get_bridge(self.hass)
+            if not bridge.is_enabled() or not bridge.is_ma_available():
+                return
+
+            # Get artist and track from playerState
+            request = bridge.parse_voice_request(player_state)
+
+            # Only intercept music tracks
+            if request["type"] not in ("track", "artist", "album"):
+                return
+
+            # Skip if no info
+            if not request["query"]:
+                return
+
+            # Check if this is a preview or error (duration <= 60s)
+            duration = player_state.get("duration", 0)
+            if duration and duration > 60000:
+                return
+
+            _LOGGER.debug(
+                f"MA fallback: {request['type']} for "
+                f"{request['query']} (duration={duration}ms)"
+            )
+
+            import asyncio
+            asyncio.create_task(
+                bridge.search_and_play(
+                    self.entity_id,
+                    artist=request["artist"],
+                    track=request["track"],
+                    request_type=request["type"],
+                    announce=True,
+                )
+            )
+
+        except Exception as e:
+            _LOGGER.debug(f"MA fallback check failed: {e}")
 
     # BASE MEDIA PLAYER FUNCTIONS
 

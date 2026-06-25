@@ -32,7 +32,17 @@ from homeassistant.helpers import (
 from homeassistant.helpers.event import async_track_time_interval
 
 from .core import stream, utils
-from .core.const import CONF_MEDIA_PLAYERS, DATA_CONFIG, DATA_SPEAKERS, DOMAIN
+from .core.const import (
+    CONF_DEBUG,
+    CONF_MEDIA_PLAYERS,
+    CONF_PROXY,
+    CONF_RECOGNITION_LANG,
+    CONF_SSL,
+    CONF_TTS_NAME,
+    DATA_CONFIG,
+    DATA_SPEAKERS,
+    DOMAIN,
+)
 from .core.yandex_glagol import YandexIOListener
 from .core.yandex_quasar import YandexQuasar
 from .core.yandex_session import YandexSession
@@ -67,12 +77,6 @@ PLATFORMS = [
     "vacuum",
     "water_heater",
 ]
-
-CONF_TTS_NAME = "tts_service_name"
-CONF_DEBUG = "debug"
-CONF_RECOGNITION_LANG = "recognition_lang"
-CONF_PROXY = "proxy"
-CONF_SSL = "ssl"
 
 CONFIG_SCHEMA = vol.Schema(
     {
@@ -164,7 +168,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     quasar = YandexQuasar(yandex)
     await quasar.init()
 
-    await hass_utils.load_fake_devies(hass, quasar)
+    await hass_utils.load_fake_devices(hass, quasar)
 
     # entry.unique_id - user login
     hass.data[DOMAIN][entry.unique_id] = quasar
@@ -181,7 +185,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
 
     quasar.start()
 
-    if hass_utils.incluce_devices(hass, entry):
+    if hass_utils.include_devices(hass, entry):
         quasar.platforms = platforms = PLATFORMS
         entry.async_on_unload(
             async_track_time_interval(
@@ -199,16 +203,33 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     if matrix_config and matrix_config.get("access_token"):
         try:
             from .hass.matrix_bot import MatrixBotHandler
-            
+
             matrix_handler = MatrixBotHandler(hass, matrix_config)
             hass.data.setdefault(DOMAIN, {})["matrix_handler"] = matrix_handler
-            
+
             # Start Matrix bot
             await matrix_handler.async_start()
-            
-            _LOGGER.info("✅ Matrix bot интеграция инициализирована")
+
+            _LOGGER.info("Matrix bot integration initialized")
         except Exception as e:
             _LOGGER.error(f"Ошибка инициализации Matrix бота: {e}")
+
+    # Initialize Music Plus bypass service
+    try:
+        from .hass.music_bypass_service import async_setup_music_bypass
+
+        await async_setup_music_bypass(hass, yandex)
+    except Exception as e:
+        _LOGGER.error(f"Failed to setup music bypass service: {e}")
+
+    # Initialize Music Assistant bridge
+    try:
+        from .hass.music_assistant_bridge import get_bridge
+
+        bridge = get_bridge(hass)
+        bridge.load_options(entry)
+    except Exception as e:
+        _LOGGER.error(f"Failed to setup MA bridge: {e}")
 
     return True
 

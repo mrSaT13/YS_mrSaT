@@ -62,7 +62,7 @@ class YandexCalendar(CalendarEntity):
                     break
             else:
                 self.next_event = None
-        except:
+        except Exception:
             pass
 
     async def async_get_events(

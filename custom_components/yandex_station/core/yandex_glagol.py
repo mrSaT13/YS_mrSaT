@@ -172,10 +172,10 @@ class YandexGlagol:
                                 response = vinsResponse["response"]
 
                             if card := response.get("card"):
-                                _LOGGER.debug(f"🎵 Карточка (card): {json.dumps(card, ensure_ascii=False, indent=2)[:500]}")
+                                _LOGGER.debug(f"Card: {json.dumps(card, ensure_ascii=False, indent=2)[:500]}")
                                 result.update(card)
                             elif cards := response.get("cards"):
-                                _LOGGER.debug(f"🎵 Карточки (cards): {json.dumps(cards[0], ensure_ascii=False, indent=2)[:500]}")
+                                _LOGGER.debug(f"Cards: {json.dumps(cards[0], ensure_ascii=False, indent=2)[:500]}")
                                 result.update(cards[0])
                             elif is_streaming := response.get("is_streaming"):
                                 result["is_streaming"] = is_streaming
@@ -241,7 +241,7 @@ class YandexGlagol:
                     "sentTime": int(round(time.time() * 1000)),
                 }
             )
-        except:
+        except Exception:
             pass
 
     async def send(self, payload: dict) -> Optional[dict]:

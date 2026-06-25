@@ -1,0 +1,39 @@
+- id: "matrix_alice_conversation"
+  alias: "🤖 Matrix → Alice → Matrix"
+  description: "Текст из Element Matrix в Алису и обратно (БЕЗ LOOP)"
+  triggers:
+    - trigger: event
+      event_type: yandex_station_matrix_text
+  conditions:
+    # Условие 1: Не обрабатывать сообщения от самого бота
+    - condition: template
+      value_template: "{{ trigger.event.data.sender != '@alice_bot:192.168.1.42' }}"
+    
+    # Условие 2: Не обрабатывать пустые сообщения
+    - condition: template
+      value_template: "{{ trigger.event.data.text | trim | length > 0 }}"
+  actions:
+    # Шаг 1: Отправить сообщение в conversation Alice
+    - action: conversation.process
+      data:
+        agent_id: conversation.mini2_stantsi_alisa
+        text: "{{ trigger.event.data.text }}"
+        conversation_id: "matrix_{{ trigger.event.data.room_id }}"
+      response_variable: response
+      continue_on_error: true
+    
+    # Шаг 2: Если ответ валидный - отправить в Matrix
+    - if:
+        - condition: template
+          value_template: >
+            {% if response.response is defined and 
+                  response.response.speech is defined and 
+                  response.response.speech.plain is defined %}
+              {{ response.response.speech.plain.speech | default('', true) | trim | length > 0 }}
+            {% else %}
+              false
+            {% endif %}
+      then:
+        - action: yandex_station.matrix_send_message
+          data:
+            message: "{{ response.response.speech.plain.speech }}"

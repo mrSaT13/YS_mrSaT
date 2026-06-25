@@ -14,7 +14,7 @@ INCLUDE_TYPES = ("devices.types.other",)
 async def async_setup_entry(hass, entry, async_add_entities):
     async_add_entities(
         YandexOther(quasar, device, config)
-        for quasar, device, config in hass_utils.incluce_devices(hass, entry)
+        for quasar, device, config in hass_utils.include_devices(hass, entry)
         if device["type"] in INCLUDE_TYPES
     )
 

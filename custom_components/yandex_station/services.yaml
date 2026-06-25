@@ -61,7 +61,36 @@ matrix_send_message:
     message:
       name: Message
       description: Message text to send (supports Markdown)
-      example: "🎵 Сейчас играет: Song Name by Artist"
+      example: "Сейчас играет: Song Name by Artist"
       selector:
         text:
           multiline: true
+
+yandex_music_play:
+  name: Yandex Music Play
+  description: Play music from Yandex Music with Plus subscription bypass
+  fields:
+    query:
+      name: Query
+      description: "Search query (e.g. 'Marilyn Manson The Beautiful People')"
+      example: "Marilyn Manson The Beautiful People"
+      selector:
+        text:
+    entity_id:
+      name: Speaker
+      description: Speaker entity ID (optional, uses first available if not specified)
+      example: "media_player.yandex_station"
+      selector:
+        entity:
+          domain: media_player
+          integration: yandex_station
+    quality:
+      name: Quality
+      description: "Audio quality: lossless, nq (normal), lq (low)"
+      example: "lossless"
+      selector:
+        select:
+          options:
+            - "lossless"
+            - "nq"
+            - "lq"
