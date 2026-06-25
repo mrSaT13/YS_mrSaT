@@ -3,7 +3,7 @@ import logging
 from typing import Optional
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_component import EntityComponent
-from .core.const import DOMAIN
+from ..core.const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 MA_DOMAIN = "music_assistant"
@@ -18,9 +18,12 @@ class MusicAssistantBridge:
 
     def load_options(self, config_entry):
         self._options = config_entry.options.get("music_assistant", {})
+        _LOGGER.debug(f"MA bridge options loaded: {self._options}")
 
     def is_enabled(self):
-        return self._options.get("enabled", False)
+        enabled = self._options.get("enabled", False)
+        _LOGGER.debug(f"MA bridge enabled={enabled}, ma_available={self.is_ma_available()}")
+        return enabled
 
     def is_ma_available(self):
         return MA_DOMAIN in self.hass.data
@@ -177,7 +180,7 @@ class MusicAssistantBridge:
             for did, speaker in speakers.items():
                 entity = speaker.get("entity")
                 if entity and entity.hass and hasattr(entity, "glagol") and entity.glagol:
-                    from .core.utils import external_command
+                    from ..core.utils import external_command
                     command = external_command("tts", {"text": text})
                     await entity.glagol.send(command)
                     return

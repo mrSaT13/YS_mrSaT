@@ -17,10 +17,10 @@ from homeassistant.components.media_player import (
 from homeassistant.const import ATTR_ENTITY_ID
 from homeassistant.core import ServiceCall
 
-from .core import utils
-from .core.const import DATA_CONFIG, DATA_SPEAKERS, DOMAIN
-from .core.music_plus_bypass import search_and_get_url
-from .core.yandex_session import YandexSession
+from ..core import utils
+from ..core.const import DATA_CONFIG, DATA_SPEAKERS, DOMAIN
+from ..core.music_plus_bypass import search_and_get_url
+from ..core.yandex_session import YandexSession
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -95,7 +95,7 @@ async def async_setup_music_bypass(hass, session: YandexSession):
         stream_url = result["direct_url"]
         if stream_url:
             # Use the existing stream URL playback mechanism
-            from .core.utils import get_stream_url, external_command
+            from ..core.utils import get_stream_url, external_command
 
             # Determine codec from URL
             if ".mp3" in stream_url:

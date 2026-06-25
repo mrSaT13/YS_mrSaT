@@ -658,26 +658,33 @@ class YandexStationBase(MediaBrowser, RestoreEntity):
             from ..hass.music_assistant_bridge import get_bridge
 
             bridge = get_bridge(self.hass)
-            if not bridge.is_enabled() or not bridge.is_ma_available():
+            if not bridge.is_enabled():
+                return
+            if not bridge.is_ma_available():
+                _LOGGER.debug("MA fallback: MA not available")
                 return
 
             # Get artist and track from playerState
             request = bridge.parse_voice_request(player_state)
+            _LOGGER.debug(f"MA fallback: parsed request={request}")
 
             # Only intercept music tracks
             if request["type"] not in ("track", "artist", "album"):
+                _LOGGER.debug(f"MA fallback: skipping type={request['type']}")
                 return
 
             # Skip if no info
             if not request["query"]:
+                _LOGGER.debug("MA fallback: no query")
                 return
 
             # Check if this is a preview or error (duration <= 60s)
             duration = player_state.get("duration", 0)
             if duration and duration > 60000:
+                _LOGGER.debug(f"MA fallback: full track ({duration}ms), skipping")
                 return
 
-            _LOGGER.debug(
+            _LOGGER.info(
                 f"MA fallback: {request['type']} for "
                 f"{request['query']} (duration={duration}ms)"
             )
