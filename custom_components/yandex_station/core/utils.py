@@ -373,8 +373,8 @@ async def get_playlist_uid(
         )
         resp = await r.json()
         return resp["result"]["owner"]["uid"]
-                except Exception:
-                    return None
+    except Exception:
+        return None
 
 
 def dump_capabilities(data: dict) -> dict:
