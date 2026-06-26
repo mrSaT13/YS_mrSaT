@@ -571,6 +571,32 @@ class YandexStationBase(MediaBrowser, RestoreEntity):
                 self.last_voice_text = asr_text
                 _LOGGER.info(f"ASR recognized: '{asr_text}'")
 
+            # Extract voice_response — contains what Alice heard and her reply
+            voice_resp = vins.get("voice_response")
+            if voice_resp:
+                _LOGGER.info(f"voice_response for {self.name}: {json.dumps(voice_resp, ensure_ascii=False)[:600]}")
+                # Try to get recognized text from voice_response
+                for field in ("text", "input", "query", "utterance", "recognized"):
+                    if val := voice_resp.get(field):
+                        if not asr_text:
+                            asr_text = val
+                            self.last_voice_text = val
+                            _LOGGER.info(f"ASR from voice_response.{field}: '{val}'")
+                        texts.append(f"vr.{field}={val}")
+                        break
+                # Check nested structures
+                if isinstance(voice_resp, dict):
+                    for sub in ("request", "input", "nlu"):
+                        if sub_data := voice_resp.get(sub):
+                            if isinstance(sub_data, dict):
+                                for field in ("text", "query", "utterance"):
+                                    if val := sub_data.get(field):
+                                        if not asr_text:
+                                            asr_text = val
+                                            self.last_voice_text = val
+                                            _LOGGER.info(f"ASR from voice_response.{sub}.{field}: '{val}'")
+                                        texts.append(f"vr.{sub}.{field}={val}")
+
             # Full debug dump of all VINS keys to discover new fields
             _LOGGER.debug(f"VINS full keys for {self.name}: "
                           f"vins_keys={list(vins.keys())}; "
@@ -705,6 +731,7 @@ class YandexStationBase(MediaBrowser, RestoreEntity):
         # Also check vinsResponse for "can't play" responses
         if vins := data.get("vinsResponse"):
             self._check_vins_music_response(vins, data)
+            self._check_voice_music_command(vins)
 
     def _check_vins_music_response(self, vins: dict, data: dict):
         """Check if vinsResponse indicates a failed music playback."""
@@ -813,6 +840,82 @@ class YandexStationBase(MediaBrowser, RestoreEntity):
 
         except Exception as e:
             _LOGGER.debug(f"MA vins check failed: {e}")
+
+    def _check_voice_music_command(self, vins: dict):
+        """Detect music requests from voice_response in VINS.
+
+        When user speaks to speaker (not sendText), the voice_response field
+        contains what Alice heard and her reply. If it looks like a music
+        request, we trigger MA to play it.
+        """
+        try:
+            voice_resp = vins.get("voice_response")
+            if not voice_resp or not isinstance(voice_resp, dict):
+                return
+
+            # Extract recognized text from voice_response
+            recognized = None
+            for field in ("text", "input", "query", "utterance", "recognized"):
+                if val := voice_resp.get(field):
+                    recognized = val
+                    break
+            if not recognized:
+                for sub in ("request", "input", "nlu"):
+                    sub_data = voice_resp.get(sub)
+                    if isinstance(sub_data, dict):
+                        for field in ("text", "query", "utterance"):
+                            if val := sub_data.get(field):
+                                recognized = val
+                                break
+                    if recognized:
+                        break
+
+            if not recognized:
+                return
+
+            recognized_lower = recognized.lower()
+
+            # Check if it's a music request
+            music_keywords = [
+                "включи", "включай", "играй", "проиграй", "запусти",
+                "поставь", "воспроизведи", "музык", "трек", "песню",
+                "песня", "артист", "исполнител", "альбом", "плейлист",
+                "радио", "radio", "найди", "найти",
+            ]
+            if not any(kw in recognized_lower for kw in music_keywords):
+                return
+
+            # Strip command words
+            query = recognized_lower
+            for kw in ["включи", "включай", "играй", "проиграй", "запусти",
+                        "поставь", "воспроизведи", "музыку", "трек", "песню",
+                        "песня", "артиста", "исполнителя", "альбом", "плейлист",
+                        "радио", "найди", "найти"]:
+                query = query.replace(kw, "")
+            query = query.strip().strip(",.!?")
+            if not query or len(query) < 2:
+                return
+
+            _LOGGER.info(f"MA voice: music request from voice_response: '{recognized}' → query='{query}'")
+
+            # Check if player already started playing (server resolved it)
+            player = self.local_state.get("playerState") if self.local_state else None
+            if player and player.get("title") and player.get("subtitle"):
+                _LOGGER.info(f"MA voice: server already playing '{player['subtitle']} - {player['title']}', skipping")
+                return
+
+            # Trigger MA search via Glagol
+            glagol = getattr(self, 'glagol', None)
+            if glagol:
+                import asyncio
+                asyncio.create_task(glagol._play_via_ma(
+                    self,
+                    artist=query,
+                    track=None,
+                ))
+
+        except Exception as e:
+            _LOGGER.debug(f"MA voice check failed: {e}")
 
     def _check_music_assistant_fallback(self, player_state: dict):
         """Check if MA fallback is needed when speaker plays preview/error."""
