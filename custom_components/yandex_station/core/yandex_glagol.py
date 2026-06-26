@@ -270,6 +270,29 @@ class YandexGlagol:
         if not query or len(query) < 2:
             return
 
+        # Check for genre keywords
+        from ..hass.music_assistant_bridge import get_bridge, GENRE_KEYWORDS
+        genre = None
+        for keyword, genre_name in GENRE_KEYWORDS.items():
+            if keyword in query:
+                genre = genre_name
+                query = query.replace(keyword, "").strip()
+                break
+
+        if genre:
+            _LOGGER.info(f"MA: genre '{genre}' detected from '{text}'")
+            try:
+                entity = self.device.get("entity")
+                if entity and entity.hass:
+                    import asyncio
+                    asyncio.create_task(self._play_genre(entity, genre))
+            except Exception as e:
+                _LOGGER.debug(f"MA genre play failed: {e}")
+            return
+
+        if not query:
+            return
+
         _LOGGER.info(f"MA: music request '{query}' — resolving via Yandex search")
 
         # Resolve name via Yandex Music API, then search MA
@@ -280,6 +303,21 @@ class YandexGlagol:
                 asyncio.create_task(self._resolve_and_search(entity, query))
         except Exception as e:
             _LOGGER.debug(f"MA resolve failed: {e}")
+
+    async def _play_genre(self, entity, genre: str):
+        """Play genre directly via MA."""
+        try:
+            from ..hass.music_assistant_bridge import get_bridge
+            bridge = get_bridge(entity.hass)
+            if not bridge.is_enabled():
+                return
+            await bridge.search_and_play(
+                entity.entity_id,
+                genre=genre,
+                announce=True,
+            )
+        except Exception as e:
+            _LOGGER.debug(f"MA genre play failed: {e}")
 
     async def _resolve_and_search(self, entity, raw_query: str):
         """Resolve query via Yandex Music API, then search MA."""

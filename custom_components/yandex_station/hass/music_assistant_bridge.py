@@ -2,12 +2,31 @@
 import logging
 from typing import Optional
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity_component import EntityComponent
 from ..core.const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 MA_DOMAIN = "music_assistant"
 MIN_SEARCH_INTERVAL = 10
+
+GENRE_KEYWORDS = {
+    "рок": "rock", "rock": "rock",
+    "поп": "pop", "pop": "pop",
+    "джаз": "jazz", "jazz": "jazz",
+    "классик": "classical", "классика": "classical", "classical": "classical",
+    "хип-хоп": "hiphop", "хип хоп": "hiphop", "hiphop": "hiphop", "rap": "hiphop",
+    "рэп": "hiphop",
+    "электроник": "electronic", "электронная": "electronic", "electronic": "electronic",
+    " dance": "dance", "танцы": "dance",
+    "метал": "metal", "metal": "metal",
+    "инди": "indie", "indie": "indie",
+    "кантри": "country", "country": "country",
+    "блюз": "blues", "blues": "blues",
+    "рэгги": "reggae", "reggae": "reggae",
+    "фанк": "funk", "funk": "funk",
+    "соул": "soul", "soul": "soul",
+    "рнб": "rnb", "rnb": "rnb",
+    "латино": "latin", "латин": "latin", "latin": "latin",
+}
 
 
 class MusicAssistantBridge:
@@ -21,9 +40,7 @@ class MusicAssistantBridge:
         _LOGGER.debug(f"MA bridge options loaded: {self._options}")
 
     def is_enabled(self):
-        enabled = self._options.get("enabled", False)
-        _LOGGER.debug(f"MA bridge enabled={enabled}, ma_available={self.is_ma_available()}")
-        return enabled
+        return self._options.get("enabled", False)
 
     def is_ma_available(self) -> bool:
         if MA_DOMAIN in self.hass.data:
@@ -50,8 +67,39 @@ class MusicAssistantBridge:
     def _should_announce(self):
         return self._options.get("announce", True)
 
+    def _should_clear_queue(self):
+        return self._options.get("clear_queue", True)
+
+    def _should_shuffle(self):
+        return self._options.get("shuffle", True)
+
+    def _get_repeat(self):
+        return self._options.get("repeat", "off")
+
+    def _get_enqueue_mode(self):
+        mode = self._options.get("enqueue_mode", "replace")
+        # auto_resume: if playing, add next instead of replace
+        if self._options.get("auto_resume", True) and mode == "replace":
+            ma_entity = self._get_configured_ma_player()
+            if ma_entity:
+                state = self.hass.states.get(ma_entity)
+                if state and state.state == "playing":
+                    return "next"
+        return mode
+
     def _should_fallback_to_similar(self):
         return self._options.get("fallback_to_similar", True)
+
+    def _get_volume(self):
+        return self._options.get("volume", 0)
+
+    def detect_genre(self, text: str) -> Optional[str]:
+        """Detect genre from text. Returns English genre name or None."""
+        text_lower = text.lower().strip()
+        for keyword, genre in GENRE_KEYWORDS.items():
+            if keyword in text_lower:
+                return genre
+        return None
 
     def get_ma_entity_for_speaker(self, speaker_entity_id):
         if not self.is_ma_available():
@@ -94,7 +142,41 @@ class MusicAssistantBridge:
                 result["query"] = title
         return result
 
-    async def search_and_play(self, speaker_entity_id, artist=None, track=None, request_type="track", announce=True):
+    async def _apply_playback_settings(self, ma_entity):
+        """Apply shuffle, repeat, volume settings to MA player."""
+        try:
+            # Volume (0 = don't change)
+            volume = self._get_volume()
+            if volume > 0:
+                await self.hass.services.async_call(
+                    "media_player", "volume_set",
+                    {"entity_id": ma_entity, "volume_level": volume / 100.0},
+                    blocking=True
+                )
+                _LOGGER.debug(f"MA volume set to {volume}%")
+
+            # Shuffle
+            shuffle = self._should_shuffle()
+            await self.hass.services.async_call(
+                "media_player", "shuffle_set",
+                {"entity_id": ma_entity, "shuffle": shuffle},
+                blocking=True
+            )
+            _LOGGER.debug(f"MA shuffle set to {shuffle}")
+
+            # Repeat
+            repeat = self._get_repeat()
+            await self.hass.services.async_call(
+                "media_player", "repeat_set",
+                {"entity_id": ma_entity, "repeat": repeat},
+                blocking=True
+            )
+            _LOGGER.debug(f"MA repeat set to {repeat}")
+
+        except Exception as e:
+            _LOGGER.debug(f"Failed to apply playback settings: {e}")
+
+    async def search_and_play(self, speaker_entity_id, artist=None, track=None, request_type="track", announce=True, genre=None):
         import time
         now = time.time()
         last_search = self._last_search_time.get(speaker_entity_id, 0)
@@ -103,6 +185,14 @@ class MusicAssistantBridge:
         self._last_search_time[speaker_entity_id] = now
         if not self.is_ma_available():
             return False
+
+        # Genre takes priority
+        if genre:
+            ma_entity = self.get_ma_entity_for_speaker(speaker_entity_id)
+            if not ma_entity:
+                return False
+            return await self._play_genre(ma_entity, genre, announce)
+
         if artist and track:
             query = f"{artist} {track}"
         elif artist:
@@ -116,26 +206,71 @@ class MusicAssistantBridge:
         if not ma_entity:
             return False
         try:
+            # Clear queue if enabled and playing artist/album
+            if self._should_clear_queue() and request_type in ("artist", "album", "playlist"):
+                await self._clear_queue(ma_entity)
+
             if request_type == "artist":
-                return await self._play_artist_radio(ma_entity, artist or query, announce)
+                ok = await self._play_artist(ma_entity, artist or query, announce)
             elif request_type == "track":
-                return await self._play_track(ma_entity, artist, track or query, announce)
+                ok = await self._play_track(ma_entity, artist, track or query, announce)
             elif request_type == "album":
-                return await self._play_artist_radio(ma_entity, query, announce)
+                ok = await self._play_artist(ma_entity, query, announce)
             else:
-                return await self._play_artist_radio(ma_entity, query, announce)
+                ok = await self._play_artist(ma_entity, query, announce)
+
+            if ok:
+                await self._apply_playback_settings(ma_entity)
+
+            return ok
         except Exception as e:
             _LOGGER.error(f"MA play failed: {e}")
             return False
 
+    async def _play_genre(self, ma_entity, genre: str, announce):
+        """Play random tracks from a genre."""
+        if announce and self._should_announce():
+            await self._announce(f"Playing: {genre}")
+        enqueue = self._get_enqueue_mode()
+        try:
+            # Search for tracks in genre and play first result
+            result = await self.hass.services.async_call(
+                MA_DOMAIN, "play_media",
+                {
+                    "entity_id": ma_entity,
+                    "media_id": genre,
+                    "media_type": "artist",
+                    "radio_mode": True,
+                    "enqueue": enqueue,
+                },
+                blocking=True
+            )
+            _LOGGER.info(f"Playing genre: {genre}")
+            return True
+        except Exception as e:
+            _LOGGER.error(f"MA play_genre failed: {e}")
+            return False
+
+    async def _clear_queue(self, ma_entity):
+        try:
+            await self.hass.services.async_call(
+                MA_DOMAIN, "clear_queue",
+                {"entity_id": ma_entity},
+                blocking=True
+            )
+            _LOGGER.debug(f"MA queue cleared for {ma_entity}")
+        except Exception as e:
+            _LOGGER.debug(f"Failed to clear queue: {e}")
+
     async def _play_track(self, ma_entity, artist, track, announce):
         query = f"{artist} {track}".strip() if artist else track
         if announce and self._should_announce():
-            await self._announce(f"Ищу: {query}")
+            await self._announce(f"Playing: {query}")
+        enqueue = self._get_enqueue_mode()
         try:
             await self.hass.services.async_call(
                 MA_DOMAIN, "play_media",
-                {"entity_id": ma_entity, "media_id": query, "media_type": "track"},
+                {"entity_id": ma_entity, "media_id": query, "media_type": "track", "enqueue": enqueue},
                 blocking=True
             )
             _LOGGER.info(f"Playing track: {query}")
@@ -144,32 +279,20 @@ class MusicAssistantBridge:
             _LOGGER.error(f"MA play_track failed: {e}")
             return False
 
-    async def _play_item(self, ma_entity, item, announce, message):
-        media_uri = item.get("uri")
-        if not media_uri:
-            return False
+    async def _play_artist(self, ma_entity, artist, announce):
         if announce and self._should_announce():
-            await self._announce(message)
+            await self._announce(f"Playing: {artist}")
+        enqueue = self._get_enqueue_mode()
         try:
-            await self.hass.services.async_call(MA_DOMAIN, "play_media",
-                {"entity_id": ma_entity, "media_id": media_uri}, blocking=True)
-            _LOGGER.info(f"Playing: {item.get('name', media_uri)}")
+            await self.hass.services.async_call(
+                MA_DOMAIN, "play_media",
+                {"entity_id": ma_entity, "media_id": artist, "media_type": "artist", "enqueue": enqueue},
+                blocking=True
+            )
+            _LOGGER.info(f"Playing artist: {artist}")
             return True
         except Exception as e:
-            _LOGGER.error(f"MA play_media failed: {e}")
-            return False
-
-    async def _play_artist_radio(self, ma_entity, artist, announce):
-        if announce and self._should_announce():
-            await self._announce(f"Включаю радио: {artist}")
-        try:
-            await self.hass.services.async_call(MA_DOMAIN, "play_media",
-                {"entity_id": ma_entity, "media_id": artist, "media_type": "artist", "radio_mode": True},
-                blocking=True)
-            _LOGGER.info(f"Playing artist radio: {artist}")
-            return True
-        except Exception as e:
-            _LOGGER.error(f"MA artist radio failed: {e}")
+            _LOGGER.error(f"MA play_artist failed: {e}")
             return False
 
     async def _announce(self, text):

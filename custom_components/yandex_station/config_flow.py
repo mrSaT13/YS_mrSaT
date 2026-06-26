@@ -333,9 +333,33 @@ class OptionsFlowHandler(OptionsFlow):
                 default=defaults.get("announce", True),
             ): bool,
             vol.Optional(
+                "clear_queue",
+                default=defaults.get("clear_queue", True),
+            ): bool,
+            vol.Optional(
+                "shuffle",
+                default=defaults.get("shuffle", True),
+            ): bool,
+            vol.Optional(
+                "repeat",
+                default=defaults.get("repeat", "off"),
+            ): vol.In({"off": "Выкл", "one": "Повтор трека", "all": "Повтор плейлиста"}),
+            vol.Optional(
+                "enqueue_mode",
+                default=defaults.get("enqueue_mode", "replace"),
+            ): vol.In({"replace": "Заменить очередь", "next": "Добавить следующим", "add": "Добавить в конец"}),
+            vol.Optional(
+                "auto_resume",
+                default=defaults.get("auto_resume", True),
+            ): bool,
+            vol.Optional(
                 "fallback_to_similar",
                 default=defaults.get("fallback_to_similar", True),
             ): bool,
+            vol.Optional(
+                "volume",
+                default=defaults.get("volume", 0),
+            ): vol.All(vol.Coerce(int), vol.Range(min=0, max=100)),
         })
 
         return self.async_show_form(

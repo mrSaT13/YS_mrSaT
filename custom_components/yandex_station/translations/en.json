@@ -37,38 +37,44 @@
     "step": {
       "init": {
         "menu_options": {
-          "devices": "Devices",
-          "matrix_bot": "Matrix Bot",
+          "devices": "Устройства",
+          "matrix_bot": "Matrix Бот",
           "music_assistant": "Music Assistant"
         }
       },
       "devices": {
-        "title": "Devices",
-        "description": "Select Yandex Station devices to import into Home Assistant",
+        "title": "Устройства",
+        "description": "Выберите устройства Яндекс Станции для импорта в Home Assistant",
         "data": {
-          "include": "Devices"
+          "include": "Устройства"
         }
       },
       "matrix_bot": {
-        "title": "Matrix Bot",
-        "description": "Matrix chat integration for remote control\n\nFound speakers: {speaker_count}",
+        "title": "Matrix Бот",
+        "description": "Интеграция с Matrix чатом для удалённого управления\n\nНайдено колонок: {speaker_count}",
         "data": {
-          "enabled": "Enabled",
-          "server_url": "Matrix server URL",
-          "room_id": "Room ID",
-          "access_token": "Access token",
-          "conversation_entity": "Speaker for responses"
+          "enabled": "Включено",
+          "server_url": "URL сервера Matrix",
+          "room_id": "ID комнаты",
+          "access_token": "Токен доступа",
+          "conversation_entity": "Колонка для ответов"
         }
       },
       "music_assistant": {
         "title": "Music Assistant",
-        "description": "Music Assistant integration for playing music from your library\n\nFound MA players: {ma_count}\nFound Yandex speakers: {speaker_count}",
+        "description": "Интеграция с Music Assistant для воспроизведения музыки из вашей библиотеки\n\nНайдено MA плееров: {ma_count}\nНайдено колонок Яндекс: {speaker_count}",
         "data": {
-          "enabled": "Enabled",
-          "ma_player": "MA player",
-          "yandex_speaker": "Yandex speaker",
-          "announce": "Announce track name",
-          "fallback_to_similar": "Play similar if not found"
+          "enabled": "Включено",
+          "ma_player": "MA плеер",
+          "yandex_speaker": "Колонка Яндекс",
+          "announce": "Объявлять название",
+          "clear_queue": "Очищать очередь перед новым артистом/альбомом",
+          "shuffle": "Перемешивать треки",
+          "repeat": "Режим повтора",
+          "enqueue_mode": "Режим очереди",
+          "auto_resume": "Не прерывать музыку (добавлять следующим)",
+          "fallback_to_similar": "Искать похожее если не найдено",
+          "volume": "Громкость (0=не менять, 1-100)"
         }
       }
     }
