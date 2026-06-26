@@ -349,10 +349,6 @@ class OptionsFlowHandler(OptionsFlow):
                 default=defaults.get("enqueue_mode", "replace"),
             ): vol.In({"replace": "Заменить очередь", "next": "Добавить следующим", "add": "Добавить в конец"}),
             vol.Optional(
-                "auto_resume",
-                default=defaults.get("auto_resume", True),
-            ): bool,
-            vol.Optional(
                 "fallback_to_similar",
                 default=defaults.get("fallback_to_similar", True),
             ): bool,

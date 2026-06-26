@@ -1,32 +1,11 @@
 """Music Assistant integration for Yandex Station."""
 import logging
-from typing import Optional
 from homeassistant.core import HomeAssistant
 from ..core.const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 MA_DOMAIN = "music_assistant"
 MIN_SEARCH_INTERVAL = 10
-
-GENRE_KEYWORDS = {
-    "рок": "rock", "rock": "rock",
-    "поп": "pop", "pop": "pop",
-    "джаз": "jazz", "jazz": "jazz",
-    "классик": "classical", "классика": "classical", "classical": "classical",
-    "хип-хоп": "hiphop", "хип хоп": "hiphop", "hiphop": "hiphop", "rap": "hiphop",
-    "рэп": "hiphop",
-    "электроник": "electronic", "электронная": "electronic", "electronic": "electronic",
-    " dance": "dance", "танцы": "dance",
-    "метал": "metal", "metal": "metal",
-    "инди": "indie", "indie": "indie",
-    "кантри": "country", "country": "country",
-    "блюз": "blues", "blues": "blues",
-    "рэгги": "reggae", "reggae": "reggae",
-    "фанк": "funk", "funk": "funk",
-    "соул": "soul", "soul": "soul",
-    "рнб": "rnb", "rnb": "rnb",
-    "латино": "latin", "латин": "latin", "latin": "latin",
-}
 
 
 class MusicAssistantBridge:
@@ -77,29 +56,13 @@ class MusicAssistantBridge:
         return self._options.get("repeat", "off")
 
     def _get_enqueue_mode(self):
-        mode = self._options.get("enqueue_mode", "replace")
-        # auto_resume: if playing, add next instead of replace
-        if self._options.get("auto_resume", True) and mode == "replace":
-            ma_entity = self._get_configured_ma_player()
-            if ma_entity:
-                state = self.hass.states.get(ma_entity)
-                if state and state.state == "playing":
-                    return "next"
-        return mode
+        return self._options.get("enqueue_mode", "replace")
 
     def _should_fallback_to_similar(self):
         return self._options.get("fallback_to_similar", True)
 
     def _get_volume(self):
         return self._options.get("volume", 0)
-
-    def detect_genre(self, text: str) -> Optional[str]:
-        """Detect genre from text. Returns English genre name or None."""
-        text_lower = text.lower().strip()
-        for keyword, genre in GENRE_KEYWORDS.items():
-            if keyword in text_lower:
-                return genre
-        return None
 
     def get_ma_entity_for_speaker(self, speaker_entity_id):
         if not self.is_ma_available():
@@ -176,7 +139,7 @@ class MusicAssistantBridge:
         except Exception as e:
             _LOGGER.debug(f"Failed to apply playback settings: {e}")
 
-    async def search_and_play(self, speaker_entity_id, artist=None, track=None, request_type="track", announce=True, genre=None):
+    async def search_and_play(self, speaker_entity_id, artist=None, track=None, request_type="track", announce=True):
         import time
         now = time.time()
         last_search = self._last_search_time.get(speaker_entity_id, 0)
@@ -185,13 +148,6 @@ class MusicAssistantBridge:
         self._last_search_time[speaker_entity_id] = now
         if not self.is_ma_available():
             return False
-
-        # Genre takes priority
-        if genre:
-            ma_entity = self.get_ma_entity_for_speaker(speaker_entity_id)
-            if not ma_entity:
-                return False
-            return await self._play_genre(ma_entity, genre, announce)
 
         if artist and track:
             query = f"{artist} {track}"
@@ -206,7 +162,6 @@ class MusicAssistantBridge:
         if not ma_entity:
             return False
         try:
-            # Clear queue if enabled and playing artist/album
             if self._should_clear_queue() and request_type in ("artist", "album", "playlist"):
                 await self._clear_queue(ma_entity)
 
@@ -225,30 +180,6 @@ class MusicAssistantBridge:
             return ok
         except Exception as e:
             _LOGGER.error(f"MA play failed: {e}")
-            return False
-
-    async def _play_genre(self, ma_entity, genre: str, announce):
-        """Play random tracks from a genre."""
-        if announce and self._should_announce():
-            await self._announce(f"Playing: {genre}")
-        enqueue = self._get_enqueue_mode()
-        try:
-            # Search for tracks in genre and play first result
-            result = await self.hass.services.async_call(
-                MA_DOMAIN, "play_media",
-                {
-                    "entity_id": ma_entity,
-                    "media_id": genre,
-                    "media_type": "artist",
-                    "radio_mode": True,
-                    "enqueue": enqueue,
-                },
-                blocking=True
-            )
-            _LOGGER.info(f"Playing genre: {genre}")
-            return True
-        except Exception as e:
-            _LOGGER.error(f"MA play_genre failed: {e}")
             return False
 
     async def _clear_queue(self, ma_entity):
