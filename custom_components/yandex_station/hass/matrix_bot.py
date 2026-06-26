@@ -28,6 +28,7 @@ class MatrixBotHandler:
         self.client = None
         self.sync_token = None
         self.sent_event_ids: list = []  # Sent by us - don't process again
+        self._conversation_entity_id: Optional[str] = None
 
     async def async_start(self):
         """Start Matrix bot client."""
@@ -44,6 +45,9 @@ class MatrixBotHandler:
             
             _LOGGER.info(f"Matrix bot initialized: {self.server_url}")
             
+            # Find conversation entity
+            self._find_conversation_entity()
+            
             # Start sync loop
             self.hass.create_task(self._sync_loop())
             
@@ -52,6 +56,41 @@ class MatrixBotHandler:
         except Exception as e:
             _LOGGER.error(f"Ошибка инициализации Matrix: {e}")
             self.client = None
+
+    def _find_conversation_entity(self):
+        """Find available conversation entity for Yandex Station."""
+        # Check configured entity first
+        configured = self.config.get("conversation_entity")
+        if configured:
+            if self.hass.states.get(configured):
+                self._conversation_entity_id = configured
+                _LOGGER.info(f"Using configured conversation entity: {configured}")
+                return
+            else:
+                _LOGGER.warning(f"Configured entity {configured} not found, searching...")
+
+        try:
+            # Try to find conversation entity from entity registry
+            from homeassistant.helpers import entity_registry as er
+            registry = er.async_get(self.hass)
+
+            for entity_id, entity in registry.entities.items():
+                if entity.domain == "conversation" and entity.platform == "yandex_station":
+                    self._conversation_entity_id = entity_id
+                    _LOGGER.info(f"Found conversation entity: {entity_id}")
+                    return
+
+            # Fallback: search in states
+            for entity_id in self.hass.states.async_entity_ids("conversation"):
+                if "yandex_station" in entity_id:
+                    self._conversation_entity_id = entity_id
+                    _LOGGER.info(f"Found conversation entity (states): {entity_id}")
+                    return
+
+            _LOGGER.warning("No Yandex Station conversation entity found")
+
+        except Exception as e:
+            _LOGGER.debug(f"Error finding conversation entity: {e}")
 
     async def async_stop(self):
         """Stop Matrix bot client."""
@@ -128,18 +167,54 @@ class MatrixBotHandler:
             if not event.body or not event.body.strip():
                 continue
             
-            _LOGGER.debug(f"Matrix message from {event.sender}: {event.body}")
+            text = event.body.strip()
+            _LOGGER.info(f"Matrix message from {event.sender}: {text}")
             
-            # Fire Home Assistant event
-            self.hass.bus.async_fire(
-                EVENT_MATRIX_TEXT,
+            # Process through conversation and respond
+            await self._handle_conversation(text, event.sender)
+
+    async def _handle_conversation(self, text: str, sender: str):
+        """Process text through Yandex conversation and respond."""
+        if not self._conversation_entity_id:
+            _LOGGER.warning("No conversation entity configured")
+            # Try to find it again
+            self._find_conversation_entity()
+            if not self._conversation_entity_id:
+                return
+        
+        try:
+            # Use conversation.process service
+            result = await self.hass.services.async_call(
+                "conversation",
+                "process",
                 {
-                    "text": event.body,
-                    "sender": event.sender,
-                    "room_id": room_id,
-                    "event_id": event.event_id,
-                }
+                    "entity_id": self._conversation_entity_id,
+                    "text": text,
+                },
+                blocking=True,
+                return_response=True,
             )
+            
+            # Extract response text
+            response_text = None
+            if result:
+                # Result is dict with entity_id as key
+                for entity_id, conv_result in result.items():
+                    if hasattr(conv_result, 'response') and conv_result.response:
+                        response_text = conv_result.response.speech.get("plain", {}).get("speech", "")
+                    elif isinstance(conv_result, dict):
+                        response_text = conv_result.get("response", {}).get("speech", "")
+            
+            if response_text:
+                _LOGGER.info(f"Yandex response: {response_text}")
+                await self.send_message(f"🤖 {response_text}")
+            else:
+                _LOGGER.debug("No text response from conversation")
+                await self.send_message("🤔 Нет ответа от Алисы")
+            
+        except Exception as e:
+            _LOGGER.error(f"Conversation process failed: {e}")
+            await self.send_message(f"❌ Ошибка: {str(e)[:100]}")
 
     async def send_message(self, text: str) -> bool:
         """Send message to Matrix room."""
@@ -203,14 +278,13 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     hass.bus.async_listen_once(EVENT_HOMEASSISTANT_START, start_handler)
     hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, stop_handler)
     
-    # Listen for conversation responses
+    # Keep event listener for backward compatibility / custom automations
     @callback
     def handle_matrix_text(event):
-        """Handle incoming Matrix text."""
+        """Handle incoming Matrix text (for custom automations)."""
         text = event.data.get("text")
         room_id = event.data.get("room_id")
         
-        # Fire conversation event to be handled by automation
         hass.bus.async_fire(
             "yandex_station_matrix_text",
             {

@@ -25,8 +25,23 @@ class MusicAssistantBridge:
         _LOGGER.debug(f"MA bridge enabled={enabled}, ma_available={self.is_ma_available()}")
         return enabled
 
-    def is_ma_available(self):
-        return MA_DOMAIN in self.hass.data
+    def is_ma_available(self) -> bool:
+        if MA_DOMAIN in self.hass.data:
+            return True
+        try:
+            from homeassistant.helpers import entity_registry as er
+            er_registry = er.async_get(self.hass)
+            for entity in er_registry.entities.values():
+                if entity.platform == MA_DOMAIN:
+                    return True
+        except Exception:
+            pass
+        try:
+            if self.hass.services.has_service(MA_DOMAIN, "play_media"):
+                return True
+        except Exception:
+            pass
+        return False
 
     def _get_configured_ma_player(self):
         v = self._options.get("ma_player")

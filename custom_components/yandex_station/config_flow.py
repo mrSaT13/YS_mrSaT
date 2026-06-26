@@ -234,18 +234,45 @@ class OptionsFlowHandler(OptionsFlow):
             return self.async_abort(reason="matrix_bot_configured")
 
         defaults = self.config_entry.options.get("matrix_bot", {})
-        
-        data = vol.Schema({
+
+        # Find conversation entities (Yandex Station speakers)
+        conversation_entities = {}
+        from homeassistant.helpers import entity_registry as er
+        registry = er.async_get(self.hass)
+        for entity_id, entity in registry.entities.items():
+            if entity.domain == "conversation" and entity.platform == "yandex_station":
+                state = self.hass.states.get(entity_id)
+                name = state.attributes.get("friendly_name", entity_id) if state else entity_id
+                conversation_entities[entity_id] = name
+
+        # Also check states for conversation entities
+        for entity_id in self.hass.states.async_entity_ids("conversation"):
+            if "yandex_station" in entity_id and entity_id not in conversation_entities:
+                state = self.hass.states.get(entity_id)
+                name = state.attributes.get("friendly_name", entity_id) if state else entity_id
+                conversation_entities[entity_id] = name
+
+        schema_dict = {
             vol.Required("server_url", default=defaults.get("server_url", "https://matrix.org")): str,
             vol.Required("room_id", default=defaults.get("room_id", "")): str,
             vol.Required("access_token", default=defaults.get("access_token", "")): str,
-        })
-        
+        }
+
+        # Add speaker selection if conversation entities exist
+        if conversation_entities:
+            schema_dict[vol.Optional(
+                "conversation_entity",
+                default=defaults.get("conversation_entity", ""),
+            )] = vol.In({**{"": "Авто (первая доступная)"}, **conversation_entities})
+
+        data = vol.Schema(schema_dict)
+
         return self.async_show_form(
             step_id="matrix_bot",
             data_schema=data,
             description_placeholders={
-                "docs": "https://github.com/mrSaT13/YandexStation/blob/master/custom_components/yandex_station/hass/MATRIX_BOT.md"
+                "docs": "https://github.com/mrSaT13/YandexStation/blob/master/custom_components/yandex_station/hass/MATRIX_BOT.md",
+                "speaker_count": str(len(conversation_entities)),
             }
         )
 
