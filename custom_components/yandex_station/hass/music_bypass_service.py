@@ -6,6 +6,7 @@ Provides yandex_music_play service that:
 3. Plays it on the speaker via streamUrl command
 """
 
+import asyncio
 import logging
 
 from homeassistant.components.media_player import (
@@ -90,6 +91,37 @@ async def async_setup_music_bypass(hass, session: YandexSession):
             f"Found: {result['title']} by {result['artist']} "
             f"(duration={result['duration_ms']}ms)"
         )
+
+        # Handle premium-only track
+        if result.get("is_premium"):
+            if result.get("is_preview"):
+                # Preview available - play it with announcement
+                preview_msg = f"Воспроизводится 30-секундный превью трека {result['title']} от {result['artist']}"
+                _LOGGER.info(f"Premium preview: {preview_msg}")
+
+                # Announce to speaker via TTS
+                if entity.glagol:
+                    from ..core.utils import external_command
+                    tts_command = external_command("tts", {"text": preview_msg})
+                    await entity.glagol.send(tts_command)
+                    await asyncio.sleep(2)  # Wait for TTS to finish
+            else:
+                # No preview available
+                premium_msg = result.get("premium_message", "Этот трек требует подписки Яндекс Плюс")
+                _LOGGER.info(f"Premium track: {premium_msg}")
+
+                # Announce to speaker via TTS
+                if entity.glagol:
+                    from ..core.utils import external_command
+                    tts_command = external_command("tts", {"text": premium_msg})
+                    await entity.glagol.send(tts_command)
+
+                # Also show notification
+                hass.components.persistent_notification.async_create(
+                    premium_msg,
+                    title="Yandex Music - Premium Required"
+                )
+                return
 
         # Build stream URL command
         stream_url = result["direct_url"]

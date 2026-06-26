@@ -245,14 +245,17 @@ class YandexGlagol:
             pass
 
     def _trigger_ma_search(self, text: str):
-        """Trigger MA search if text looks like a music request."""
+        """Trigger MA search if text looks like a music request.
+
+        Also handles "найди X", "Алиса X" and similar non-standard forms.
+        """
         text_lower = text.lower()
 
         music_keywords = [
             "включи", "включай", "играй", "проиграй", "запусти",
             "поставь", "воспроизведи", "музык", "трек", "песню",
             "песня", "артист", "исполнител", "альбом", "плейлист",
-            "радио", "radio",
+            "радио", "radio", "найди", "найти",
         ]
 
         if not any(kw in text_lower for kw in music_keywords):
@@ -262,9 +265,9 @@ class YandexGlagol:
         for kw in ["включи", "включай", "играй", "проиграй", "запусти",
                      "поставь", "воспроизведи", "музыку", "трек", "песню",
                      "песня", "артиста", "исполнителя", "альбом", "плейлист",
-                     "радио"]:
+                     "радио", "найди", "найти"]:
             query = query.replace(kw, "")
-        query = query.strip()
+        query = query.strip().strip(",.!?")
 
         if not query or len(query) < 2:
             return
@@ -281,53 +284,168 @@ class YandexGlagol:
             _LOGGER.debug(f"MA stop_and_play failed: {e}")
 
     async def _stop_and_play(self, entity, query: str):
-        """Stop Yandex playback first, then resolve and play via MA."""
+        """Wait for server to resolve names via playerState, then stop and play via MA.
+
+        Hack: after sendText, Yandex server resolves speech → playerState has
+        correct title/subtitle. We wait briefly for that, extract the names,
+        then stop Yandex and hand off to MA.
+
+        Also checks entity.last_voice_text for ASR result from microphone.
+        """
+        resolved_artist = None
+        resolved_track = None
+        server_resolved = False
+
+        # First: check if entity captured ASR text from voice input
+        voice_text = getattr(entity, 'last_voice_text', None)
+        if voice_text:
+            _LOGGER.info(f"MA: ASR voice text available: '{voice_text}'")
+
         try:
-            # Send stop command to kill Yandex's "subscription needed" response
+            # Wait for the server to process sendText and update playerState
+            # The server needs time to: receive text → resolve via Alice → start playing
+            for _ in range(6):
+                await asyncio.sleep(0.25)
+
+                ps = getattr(entity, 'local_state', None)
+                if ps:
+                    player = ps.get("playerState")
+                    if player and player.get("title"):
+                        title = player.get("title", "")
+                        subtitle = player.get("subtitle", "")
+                        playlist_type = player.get("playlistType", "")
+
+                        # Only use if it looks like music (not TTS/alarm/etc)
+                        if title and subtitle and playlist_type in ("Track", "Artist", "Album", "Playlist"):
+                            resolved_artist = subtitle
+                            resolved_track = title if playlist_type == "Track" else None
+                            server_resolved = True
+                            _LOGGER.info(
+                                f"MA: server resolved '{query}' → artist='{resolved_artist}', "
+                                f"track='{resolved_track}', type={playlist_type}"
+                            )
+                            break
+                        elif title and player.get("playerType", "") != "dialog":
+                            resolved_artist = subtitle or title
+                            resolved_track = title if playlist_type == "Track" else None
+                            server_resolved = True
+                            _LOGGER.info(
+                                f"MA: server partial resolve → '{resolved_artist}' / '{resolved_track}'"
+                            )
+                            break
+
+                # Also check for voice text that arrived via VINS during the wait
+                voice_now = getattr(entity, 'last_voice_text', None)
+                if voice_now and voice_now != voice_text:
+                    voice_text = voice_now
+                    _LOGGER.info(f"MA: new ASR text during wait: '{voice_text}'")
+        except Exception as e:
+            _LOGGER.debug(f"MA: playerState wait failed: {e}")
+
+        # Now stop Yandex to prevent "subscription needed" TTS
+        try:
             if entity.glagol:
                 await entity.glagol.send({"command": "stop"})
                 await asyncio.sleep(0.3)
         except Exception:
             pass
 
-        await self._resolve_and_search(entity, query)
+        # Priority: server-resolved > API search > raw query
+        if server_resolved and resolved_artist:
+            await self._play_via_ma(entity, artist=resolved_artist, track=resolved_track)
+        else:
+            _LOGGER.info(f"MA: no server resolution for '{query}', falling back to API search")
+            await self._resolve_and_search(entity, query)
 
-    async def _resolve_and_search(self, entity, raw_query: str):
-        """Resolve query via Yandex Music API, then search MA."""
+    async def _play_via_ma(self, entity, artist: str, track: str = None):
+        """Play via Music Assistant with known artist/track names."""
         try:
             from ..hass.music_assistant_bridge import get_bridge
             bridge = get_bridge(entity.hass)
             if not bridge.is_enabled():
                 return
 
-            # Search Yandex Music to resolve the correct artist name
-            resolved_artist = raw_query
+            request_type = "track" if track else "artist"
+            _LOGGER.info(f"MA: playing via MA — artist='{artist}', track='{track}', type={request_type}")
+
+            ok = await bridge.search_and_play(
+                entity.entity_id,
+                artist=artist,
+                track=track,
+                request_type=request_type,
+                announce=True,
+            )
+
+            if not ok:
+                display_name = f"{artist} - {track}" if track else artist
+                tts_msg = f"Не удалось воспроизвести {display_name}. Возможно, нужна подписка Яндекс Плюс."
+                _LOGGER.info(f"MA playback failed, sending TTS: {tts_msg}")
+                try:
+                    from ..core.utils import external_command
+                    await entity.glagol.send(external_command("tts", {"text": tts_msg}))
+                except Exception as e2:
+                    _LOGGER.debug(f"MA fallback TTS failed: {e2}")
+
+        except Exception as e:
+            _LOGGER.debug(f"MA _play_via_ma failed: {e}")
+
+    async def _resolve_and_search(self, entity, raw_query: str):
+        """Fallback: resolve query via Yandex Music API search, then play via MA."""
+        try:
+            from ..hass.music_assistant_bridge import get_bridge
+            bridge = get_bridge(entity.hass)
+            if not bridge.is_enabled():
+                return
+
+            # Strip command words from raw query before searching
+            cleaned = raw_query.lower()
+            for kw in ["включи", "включай", "играй", "проиграй", "запусти",
+                         "поставь", "воспроизведи", "музыку", "трек", "песню",
+                         "песня", "артиста", "исполнителя", "альбом", "плейлист",
+                         "радио", "найди", "найти"]:
+                cleaned = cleaned.replace(kw, "")
+            cleaned = cleaned.strip().strip(",.!?")
+            if not cleaned or len(cleaned) < 2:
+                cleaned = raw_query
+
+            _LOGGER.info(f"MA: resolve query: raw='{raw_query}', cleaned='{cleaned}'")
+
+            resolved_artist = cleaned
             resolved_track = None
 
             try:
                 r = await self.session.get(
                     "https://api.music.yandex.net/search",
-                    params={"text": raw_query, "type": "track", "page": 0},
+                    params={"text": cleaned, "type": "artist", "page": 0},
+                    timeout=10,
+                )
+                resp = await r.json()
+                artists = resp.get("result", {}).get("artists", {}).get("results", [])
+                if artists:
+                    resolved_artist = artists[0].get("name", cleaned)
+                    _LOGGER.info(f"MA: fallback resolved artist '{cleaned}' → '{resolved_artist}'")
+            except Exception as e:
+                _LOGGER.debug(f"Yandex artist search failed: {e}, using cleaned: '{cleaned}'")
+
+            try:
+                r = await self.session.get(
+                    "https://api.music.yandex.net/search",
+                    params={"text": cleaned, "type": "track", "page": 0},
                     timeout=10,
                 )
                 resp = await r.json()
                 tracks = resp.get("result", {}).get("tracks", {}).get("results", [])
                 if tracks:
                     track = tracks[0]
-                    resolved_artist = track["artists"][0]["name"] if track.get("artists") else raw_query
-                    resolved_track = track.get("title", "")
-                    _LOGGER.info(f"MA: resolved '{raw_query}' → artist='{resolved_artist}', track='{resolved_track}'")
+                    track_artist = track["artists"][0]["name"] if track.get("artists") else ""
+                    track_title = track.get("title", "")
+                    if track_artist.lower() == resolved_artist.lower():
+                        resolved_track = track_title
+                        _LOGGER.info(f"MA: fallback resolved track → '{track_artist} - {track_title}'")
             except Exception as e:
-                _LOGGER.debug(f"Yandex search failed: {e}, using raw query")
+                _LOGGER.debug(f"Yandex track search failed: {e}")
 
-            # Search MA with resolved name
-            await bridge.search_and_play(
-                entity.entity_id,
-                artist=resolved_artist,
-                track=resolved_track,
-                request_type="track" if resolved_track else "artist",
-                announce=True,
-            )
+            await self._play_via_ma(entity, artist=resolved_artist, track=resolved_track)
 
         except Exception as e:
             _LOGGER.debug(f"MA resolve_and_search failed: {e}")

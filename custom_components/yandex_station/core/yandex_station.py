@@ -179,6 +179,7 @@ class YandexStationBase(MediaBrowser, RestoreEntity):
         self.quasar = quasar
         self.device = device
         self.requests = {}
+        self.last_voice_text = None  # ASR: recognized voice from microphone
 
         self._attr_assumed_state = True
         self._attr_is_volume_muted = False
@@ -527,22 +528,54 @@ class YandexStationBase(MediaBrowser, RestoreEntity):
         state = data["state"]
         state.pop("timeSinceLastVoiceActivity", None)
 
-        # Debug: log vinsResponse if present
+        # Debug: log vinsResponse if present — full dump to find ASR text
         if vins := data.get("vinsResponse"):
             resp = vins.get("response", {})
             texts = []
             for d in resp.get("directives", []):
                 p = d.get("payload", {})
-                for k in ("text", "tts_text", "phrase"):
+                dname = d.get("name", "")
+                for k in ("text", "tts_text", "phrase", "title", "subtitle",
+                           "speak", "content", "answer"):
                     if v := p.get(k):
-                        texts.append(f"{k}={v}")
+                        texts.append(f"{dname}:{k}={v}")
+                # Also dump full directive payload for discovery
+                if p and dname not in ("tts_play_placeholder",):
+                    texts.append(f"{dname}_payload={json.dumps(p, ensure_ascii=False)[:200]}")
             cards = resp.get("cards", [])
             if cards:
                 texts.append(f"cards={[c.get('text','') for c in cards]}")
             speech = resp.get("output_speech", {})
             if speech:
                 texts.append(f"speech={speech.get('text','')}")
+
+            # Look for ASR (recognized voice text) in all possible fields
+            asr_text = None
+            for field in ("input", "text", "recognized_text", "asr_text",
+                          "original_text", "raw_text", "query", "utterance"):
+                if val := resp.get(field):
+                    asr_text = val
+                    texts.append(f"asr({field})={val}")
+                    break
+
+            # Also check top-level vinsResponse fields
+            for field in ("text", "input", "recognized_text", "utterance", "query"):
+                if val := vins.get(field):
+                    asr_text = asr_text or val
+                    texts.append(f"vins.{field}={val}")
+
             _LOGGER.info(f"VINS for {self.name}: {'; '.join(texts) or str(vins)[:500]}")
+
+            # Store recognized voice text for MA bridge
+            if asr_text:
+                self.last_voice_text = asr_text
+                _LOGGER.info(f"ASR recognized: '{asr_text}'")
+
+            # Full debug dump of all VINS keys to discover new fields
+            _LOGGER.debug(f"VINS full keys for {self.name}: "
+                          f"vins_keys={list(vins.keys())}; "
+                          f"resp_keys={list(resp.keys())}; "
+                          f"resp={json.dumps(resp, ensure_ascii=False)[:800]}")
 
         # skip same state
         if self.local_state == state:
@@ -705,12 +738,14 @@ class YandexStationBase(MediaBrowser, RestoreEntity):
             # Check for music failure
             is_fail = any(p in full_text for p in [
                 "не могу", "нет подписки", "подключите", "платн",
-                "не удалось", "ошибк", "не доступн",
+                "не удалось", "ошибк", "не доступн", "не нашёл",
+                "не нашел", "ничего не", "нет доступа", "ограничен",
+                "только по подписк",
             ])
             is_music = any(p in full_text for p in [
                 "воспроизвест", "включ", "музык", "трек", "песн",
                 "исполнител", "артист", "альбом", "плейлист",
-                "проигр", "запуст",
+                "проигр", "запуст", "найди", "найти", "найдено",
             ])
 
             if not (is_fail and is_music):
@@ -735,6 +770,9 @@ class YandexStationBase(MediaBrowser, RestoreEntity):
                     r"трек\s+(.+?)(?:,\s*но|\.|$)",
                     r"исполнител[яю]\s+(.+?)(?:,\s*но|\.|$)",
                     r"песн[юя]\s+(.+?)(?:,\s*но|\.|$)",
+                    r"не нашёл\s+(.+?)(?:\s|\.|$)",
+                    r"не нашел\s+(.+?)(?:\s|\.|$)",
+                    r"не могу найти\s+(.+?)(?:\s|\.|$)",
                 ]
                 for pat in patterns:
                     m = re.search(pat, full_text_raw, re.IGNORECASE)

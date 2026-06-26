@@ -168,6 +168,90 @@ async def get_file_info_android(
         return None
 
 
+async def check_track_premium(
+    session: YandexSession,
+    track_id: int | str,
+) -> bool:
+    """Check if a track requires Yandex Plus subscription."""
+    try:
+        r = await session.get(
+            f"https://api.music.yandex.net/tracks/{track_id}",
+            timeout=10,
+        )
+        raw = await r.json()
+
+        if "result" not in raw:
+            return False
+
+        results = raw["result"]
+        if isinstance(results, list) and results:
+            track_data = results[0]
+        elif isinstance(results, dict):
+            track_data = results
+        else:
+            return False
+
+        # Check various indicators of premium content
+        if track_data.get("isPremium"):
+            return True
+        if track_data.get("hasRightholds"):
+            return True
+
+        download_info = track_data.get("downloadInfo", [])
+        if not download_info:
+            # No download info available - likely premium
+            return True
+
+        return False
+
+    except Exception as e:
+        _LOGGER.debug(f"check_track_premium failed for {track_id}: {e}")
+        return False
+
+
+async def get_track_preview_url(
+    session: YandexSession,
+    track_id: int | str,
+) -> str | None:
+    """Get preview URL for a track (30-second clip).
+
+    Returns preview URL or None if not available.
+    """
+    try:
+        r = await session.get(
+            f"https://api.music.yandex.net/tracks/{track_id}/download-info",
+            timeout=10,
+        )
+        raw = await r.json()
+
+        if "result" not in raw:
+            return None
+
+        download_info = raw["result"]
+        if not download_info:
+            return None
+
+        # Find mp3 entry with preview URL
+        for info in download_info:
+            codec = info.get("codec", "")
+            bitrate = info.get("bitrateInKbps", 0)
+            if codec == "mp3" and bitrate <= 192:
+                # This is likely a preview
+                url = info.get("downloadInfoUrl", "")
+                if url:
+                    return url
+
+        # If no low-quality mp3, return first available
+        if download_info:
+            return download_info[0].get("downloadInfoUrl")
+
+        return None
+
+    except Exception as e:
+        _LOGGER.debug(f"get_track_preview_url failed for {track_id}: {e}")
+        return None
+
+
 async def get_working_track_url(
     session: YandexSession,
     track_id: int | str,
@@ -207,6 +291,8 @@ async def search_and_get_url(
     Returns:
         dict with keys: track_id, title, artist, duration_ms, direct_url
         or None if not found
+
+    Special case: if track is premium-only, returns dict with premium_message
     """
     try:
         # Search for tracks
@@ -235,6 +321,35 @@ async def search_and_get_url(
 
         _LOGGER.debug(f"Found track: {title} by {artist} (id={track_id})")
 
+        # Check if track is premium-only
+        is_premium = await check_track_premium(session, track_id)
+        if is_premium:
+            # Try to get preview URL for premium tracks
+            preview_url = await get_track_preview_url(session, track_id)
+            if preview_url:
+                _LOGGER.info(f"Track {title} by {artist} is premium, but preview available")
+                return {
+                    "track_id": track_id,
+                    "title": title,
+                    "artist": artist,
+                    "duration_ms": duration_ms,
+                    "direct_url": preview_url,
+                    "is_premium": True,
+                    "is_preview": True,
+                }
+
+            _LOGGER.info(f"Track {title} by {artist} requires Yandex Plus subscription")
+            return {
+                "track_id": track_id,
+                "title": title,
+                "artist": artist,
+                "duration_ms": duration_ms,
+                "direct_url": None,
+                "is_premium": True,
+                "is_preview": False,
+                "premium_message": f"Трек {title} от {artist} требует подписки Яндекс Плюс",
+            }
+
         # Get working URL
         direct_url = await get_working_track_url(session, track_id, quality)
         if not direct_url:
@@ -247,6 +362,7 @@ async def search_and_get_url(
             "artist": artist,
             "duration_ms": duration_ms,
             "direct_url": direct_url,
+            "is_premium": False,
         }
 
     except Exception as e:
