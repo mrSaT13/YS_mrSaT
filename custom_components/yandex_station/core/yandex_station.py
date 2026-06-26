@@ -716,27 +716,42 @@ class YandexStationBase(MediaBrowser, RestoreEntity):
             if not (is_fail and is_music):
                 return
 
-            # Get query from last sendText
+            # Get query: first try last sendText, then extract from response text
             query = ""
             if hasattr(self, 'glagol') and self.glagol:
                 query = getattr(self.glagol, 'last_send_text', "") or ""
 
             if not query:
-                # Try extracting from response text
+                # Extract artist/track from Yandex response text
+                # e.g. "Включаю Лимп Бизкит, но нужно оформить подписку"
                 import re
-                m = re.search(r"(?:воспроизвести|включить|играть|проиграть)\s+(.+)", full_text)
-                if m:
-                    query = m.group(1).strip()
+                full_text_raw = " ".join(texts)
+                patterns = [
+                    r"включа[ую]\s+(.+?)(?:,\s*но|\.|$)",
+                    r"воспроизвожу\s+(.+?)(?:,\s*но|\.|$)",
+                    r"игра[ую]\s+(.+?)(?:,\s*но|\.|$)",
+                    r"найти?\s+(.+?)(?:,\s*но|\.|$)",
+                    r"ищ[уе]\s+(.+?)(?:,\s*но|\.|$)",
+                    r"трек\s+(.+?)(?:,\s*но|\.|$)",
+                    r"исполнител[яю]\s+(.+?)(?:,\s*но|\.|$)",
+                    r"песн[юя]\s+(.+?)(?:,\s*но|\.|$)",
+                ]
+                for pat in patterns:
+                    m = re.search(pat, full_text_raw, re.IGNORECASE)
+                    if m:
+                        query = m.group(1).strip()
+                        break
 
             if not query:
-                _LOGGER.debug("MA vins: music failure detected but no query")
+                _LOGGER.debug(f"MA vins: music failure but no query found in: {texts}")
                 return
 
-            # Strip "включи " prefix
+            # Clean up query
             for prefix in ("включи ", "воспроизведи ", "играй ", "проиграй "):
-                if query.startswith(prefix):
+                if query.lower().startswith(prefix):
                     query = query[len(prefix):]
                     break
+            query = query.strip().rstrip(".!?,;")
 
             _LOGGER.info(f"MA vins: music failure, searching for '{query}'")
 
