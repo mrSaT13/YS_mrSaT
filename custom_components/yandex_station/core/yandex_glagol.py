@@ -270,16 +270,28 @@ class YandexGlagol:
         if not query or len(query) < 2:
             return
 
-        _LOGGER.info(f"MA: music request '{query}' — resolving via Yandex search")
+        _LOGGER.info(f"MA: music request '{query}' — will play via MA, stopping Yandex")
 
-        # Resolve name via Yandex Music API, then search MA
+        # Immediately stop Yandex to prevent "subscription needed" TTS
         try:
             entity = self.device.get("entity")
-            if entity and entity.hass:
+            if entity and entity.glagol:
                 import asyncio
-                asyncio.create_task(self._resolve_and_search(entity, query))
+                asyncio.create_task(self._stop_and_play(entity, query))
         except Exception as e:
-            _LOGGER.debug(f"MA resolve failed: {e}")
+            _LOGGER.debug(f"MA stop_and_play failed: {e}")
+
+    async def _stop_and_play(self, entity, query: str):
+        """Stop Yandex playback first, then resolve and play via MA."""
+        try:
+            # Send stop command to kill Yandex's "subscription needed" response
+            if entity.glagol:
+                await entity.glagol.send({"command": "stop"})
+                await asyncio.sleep(0.3)
+        except Exception:
+            pass
+
+        await self._resolve_and_search(entity, query)
 
     async def _resolve_and_search(self, entity, raw_query: str):
         """Resolve query via Yandex Music API, then search MA."""

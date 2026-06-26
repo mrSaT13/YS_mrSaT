@@ -740,6 +740,14 @@ class YandexStationBase(MediaBrowser, RestoreEntity):
 
             _LOGGER.info(f"MA vins: music failure, searching for '{query}'")
 
+            # Kill Yandex TTS "need subscription" before playing via MA
+            if hasattr(self, 'glagol') and self.glagol:
+                try:
+                    import asyncio
+                    asyncio.create_task(self.glagol.send({"command": "stop"}))
+                except Exception:
+                    pass
+
             import asyncio
             asyncio.create_task(
                 bridge.search_and_play(
