@@ -253,6 +253,10 @@ class OptionsFlowHandler(OptionsFlow):
                 conversation_entities[entity_id] = name
 
         schema_dict = {
+            vol.Required(
+                "enabled",
+                default=defaults.get("enabled", True),
+            ): bool,
             vol.Required("server_url", default=defaults.get("server_url", "https://matrix.org")): str,
             vol.Required("room_id", default=defaults.get("room_id", "")): str,
             vol.Required("access_token", default=defaults.get("access_token", "")): str,

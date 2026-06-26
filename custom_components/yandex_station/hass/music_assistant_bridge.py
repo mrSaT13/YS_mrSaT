@@ -111,55 +111,38 @@ class MusicAssistantBridge:
             query = track
         else:
             return False
-        _LOGGER.info(f"MA search: type={request_type}, query={query}")
+        _LOGGER.info(f"MA play: type={request_type}, query={query}")
         ma_entity = self.get_ma_entity_for_speaker(speaker_entity_id)
         if not ma_entity:
             return False
         try:
-            media_type = "artist" if request_type == "artist" else ("album" if request_type == "album" else "track")
-            result = await self.hass.services.async_call(
-                MA_DOMAIN, "search", {"query": query, "media_type": media_type},
-                blocking=True, return_response=True,
-            )
-            if not result:
-                if self._should_fallback_to_similar() and artist:
-                    return await self._play_artist_radio(ma_entity, artist, announce)
-                return False
-            provider_results = result.get("provider", {})
-            for provider_name, items in provider_results.items():
-                if not items:
-                    continue
-                if request_type == "track":
-                    for item in items:
-                        if self._is_track_match(item, artist, track):
-                            return await self._play_item(ma_entity, item, announce, f"Вот что я нашла: {item.get('name', query)}")
-                    if items:
-                        return await self._play_item(ma_entity, items[0], announce, f"Точный трек не найден. Вот что-то похожее: {items[0].get('name', query)}")
-                elif request_type == "artist":
-                    if items:
-                        first = items[0]
-                        if first.get("media_type") == "artist":
-                            return await self._play_artist_radio(ma_entity, first.get("name", artist), announce)
-                        return await self._play_item(ma_entity, first, announce, f"Исполнитель: {first.get('name', artist)}")
-                elif request_type == "album":
-                    if items:
-                        return await self._play_item(ma_entity, items[0], announce, f"Альбом: {items[0].get('name', query)}")
-            if self._should_fallback_to_similar() and artist:
-                return await self._play_artist_radio(ma_entity, artist, announce)
-            return False
+            if request_type == "artist":
+                return await self._play_artist_radio(ma_entity, artist or query, announce)
+            elif request_type == "track":
+                return await self._play_track(ma_entity, artist, track or query, announce)
+            elif request_type == "album":
+                return await self._play_artist_radio(ma_entity, query, announce)
+            else:
+                return await self._play_artist_radio(ma_entity, query, announce)
         except Exception as e:
-            _LOGGER.error(f"MA search/play failed: {e}")
+            _LOGGER.error(f"MA play failed: {e}")
             return False
 
-    def _is_track_match(self, item, artist, track):
-        item_name = (item.get("name", "") or "").lower()
-        item_artist = (item.get("artist", "") or "").lower()
-        track_lower = (track or "").lower()
-        artist_lower = (artist or "").lower()
-        if track_lower and track_lower in item_name:
-            if not artist or artist_lower in item_artist:
-                return True
-        return False
+    async def _play_track(self, ma_entity, artist, track, announce):
+        query = f"{artist} {track}".strip() if artist else track
+        if announce and self._should_announce():
+            await self._announce(f"Ищу: {query}")
+        try:
+            await self.hass.services.async_call(
+                MA_DOMAIN, "play_media",
+                {"entity_id": ma_entity, "media_id": query, "media_type": "track"},
+                blocking=True
+            )
+            _LOGGER.info(f"Playing track: {query}")
+            return True
+        except Exception as e:
+            _LOGGER.error(f"MA play_track failed: {e}")
+            return False
 
     async def _play_item(self, ma_entity, item, announce, message):
         media_uri = item.get("uri")
