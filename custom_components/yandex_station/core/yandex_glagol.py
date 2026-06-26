@@ -144,13 +144,11 @@ class YandexGlagol:
             self.ws = await self.session.ws_connect(self.url, heartbeat=55, ssl=False)
             await self.ping(command="softwareVersion")
 
-            # if not self.keep_task or self.keep_task.done():
-            #     self.keep_task = self.loop.create_task(self._keep_connection())
+            _LOGGER.info(f"{self.name} | WebSocket connected, entering message loop")
 
             async for msg in self.ws:
                 # Большая станция в режиме idle шлёт статус раз в 5 секунд,
                 # в режиме playing шлёт чаще раза в 1 секунду
-                # self.next_ping_ts = time.time() + 6
 
                 if isinstance(msg.data, ServerTimeoutError):
                     raise msg.data
@@ -158,7 +156,7 @@ class YandexGlagol:
                 data = json.loads(msg.data)
                 fails = 0  # any message - reset fails
 
-                # debug(msg.data)
+                _LOGGER.debug(f"{self.name} <= ws received: state={'state' in data}, vins={'vinsResponse' in data}, player={'playerState' in data.get('state', {})}")
 
                 request_id = data.get("requestId")
                 if request_id in self.waiters:
@@ -192,6 +190,7 @@ class YandexGlagol:
 
             # TODO: find better place
             self.device_token = None
+            _LOGGER.warning(f"{self.name} | WebSocket message loop ended (disconnected)")
 
         except (ClientConnectorError, ConnectionResetError, ServerTimeoutError) as e:
             self.debug(f"Ошибка подключения: {repr(e)}")
