@@ -301,10 +301,15 @@ class YandexGlagol:
         if voice_text:
             _LOGGER.info(f"MA: ASR voice text available: '{voice_text}'")
 
+        # Snapshot current playerState BEFORE waiting — to detect changes
+        ps_before = getattr(entity, 'local_state', None)
+        title_before = ""
+        if ps_before and ps_before.get("playerState"):
+            title_before = ps_before["playerState"].get("title", "")
+
         try:
             # Wait for the server to process sendText and update playerState
-            # The server needs time to: receive text → resolve via Alice → start playing
-            for _ in range(6):
+            for _ in range(12):
                 await asyncio.sleep(0.25)
 
                 ps = getattr(entity, 'local_state', None)
@@ -314,8 +319,17 @@ class YandexGlagol:
                         title = player.get("title", "")
                         subtitle = player.get("subtitle", "")
                         playlist_type = player.get("playlistType", "")
+                        player_type = player.get("playerType", "")
 
-                        # Only use if it looks like music (not TTS/alarm/etc)
+                        # Skip if playerState hasn't changed from before
+                        if title == title_before:
+                            continue
+
+                        # Skip radio, dialogs, alarms
+                        if playlist_type == "FmRadio" or player_type == "dialog":
+                            continue
+
+                        # Only use if it looks like music
                         if title and subtitle and playlist_type in ("Track", "Artist", "Album", "Playlist"):
                             resolved_artist = subtitle
                             resolved_track = title if playlist_type == "Track" else None
@@ -325,7 +339,7 @@ class YandexGlagol:
                                 f"track='{resolved_track}', type={playlist_type}"
                             )
                             break
-                        elif title and player.get("playerType", "") != "dialog":
+                        elif title:
                             resolved_artist = subtitle or title
                             resolved_track = title if playlist_type == "Track" else None
                             server_resolved = True
