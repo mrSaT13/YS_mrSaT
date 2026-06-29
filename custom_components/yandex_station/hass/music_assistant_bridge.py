@@ -26,7 +26,7 @@ class MusicAssistantBridge:
         _LOGGER.debug(f"MA bridge options loaded: enabled={self.is_enabled()}, "
                       f"ma_url={self._ma_url}, player={self._get_configured_ma_player()}")
 
-        # Fetch direct API players on startup
+        # Fetch direct API players on startup (only when MA is NOT in HA)
         if self._use_direct_api:
             import asyncio
             try:
@@ -60,8 +60,32 @@ class MusicAssistantBridge:
 
     @property
     def _use_direct_api(self) -> bool:
-        """True when MA runs outside HA and we have URL + token."""
-        return bool(self._ma_url and self._ma_token)
+        """True ONLY when MA runs outside HA and we have URL + token."""
+        if not self._ma_url or not self._ma_token:
+            return False
+        # If MA is integrated in HA — use HA services, not direct API
+        if self._is_ha_ma_available():
+            return False
+        return True
+
+    def _is_ha_ma_available(self) -> bool:
+        """Check if MA is available as HA integration."""
+        if MA_DOMAIN in self.hass.data:
+            return True
+        try:
+            if self.hass.services.has_service(MA_DOMAIN, "play_media"):
+                return True
+        except Exception:
+            pass
+        try:
+            from homeassistant.helpers import entity_registry as er
+            er_registry = er.async_get(self.hass)
+            for entity in er_registry.entities.values():
+                if entity.platform == MA_DOMAIN:
+                    return True
+        except Exception:
+            pass
+        return False
 
     def _direct_headers(self) -> dict:
         return {"Authorization": f"Bearer {self._ma_token}",
@@ -139,25 +163,10 @@ class MusicAssistantBridge:
         return self._options.get("enabled", False)
 
     def is_ma_available(self) -> bool:
-        # Direct API: URL + token configured
+        if self._is_ha_ma_available():
+            return True
         if self._use_direct_api:
             return True
-        # HA-integrated MA
-        if MA_DOMAIN in self.hass.data:
-            return True
-        try:
-            from homeassistant.helpers import entity_registry as er
-            er_registry = er.async_get(self.hass)
-            for entity in er_registry.entities.values():
-                if entity.platform == MA_DOMAIN:
-                    return True
-        except Exception:
-            pass
-        try:
-            if self.hass.services.has_service(MA_DOMAIN, "play_media"):
-                return True
-        except Exception:
-            pass
         return False
 
     def _get_configured_ma_player(self):
