@@ -293,11 +293,43 @@ class OptionsFlowHandler(OptionsFlow):
 
         defaults = self.config_entry.options.get("music_assistant", {})
 
-        from .hass.music_assistant_bridge import get_bridge
+        from .hass.music_assistant_bridge import get_bridge, MusicAssistantBridge
         bridge = get_bridge(self.hass)
 
+        # Try to discover players from all available sources
         ma_players = bridge.get_all_ma_players()
         all_players = bridge.get_all_media_players()
+
+        # If URL+token configured, also fetch players via direct REST API
+        direct_players = {}
+        ma_url = defaults.get("ma_url", "")
+        ma_token = defaults.get("ma_token", "")
+        ma_status = []
+
+        if ma_url and ma_token:
+            try:
+                import aiohttp
+                headers = {"Authorization": f"Bearer {ma_token}",
+                           "Content-Type": "application/json"}
+                url = f"{ma_url.rstrip('/')}/api/players"
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url, headers=headers,
+                                           timeout=aiohttp.ClientTimeout(total=8)) as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                            if isinstance(data, list):
+                                for p in data:
+                                    pid = p.get("player_id", p.get("id", ""))
+                                    name = p.get("name", pid)
+                                    state = p.get("state", {}).get("status", "idle")
+                                    direct_players[pid] = f"{name} [{state}] (API)"
+                                ma_status.append(f"API: найдено {len(direct_players)} плееров")
+                            else:
+                                ma_status.append(f"API: неожиданный формат ответа")
+                        else:
+                            ma_status.append(f"API: ошибка {resp.status}")
+            except Exception as e:
+                ma_status.append(f"API: {e}")
 
         # Yandex Station speakers
         yandex_speakers = {}
@@ -310,18 +342,20 @@ class OptionsFlowHandler(OptionsFlow):
                 yandex_speakers[entity.entity_id] = name
 
         # MA status info
-        ma_status = []
-        ma_status.append(f"MA доступен: {'Да' if bridge.is_ma_available() else 'Нет'}")
-        ma_status.append(f"MA плееров: {len(ma_players)}")
-        if not bridge.is_ma_available():
-            ma_status.append("Укажите URL MA вручную ниже, если MA не обнаружен автоматически.")
+        ma_status.insert(0, f"MA доступен: {'Да' if bridge.is_ma_available() else 'Нет'}")
+        ma_status.insert(1, f"HA плееров: {len(ma_players)}, API плееров: {len(direct_players)}")
 
-        # Build player choices
+        # Build player choices — merge all sources
         player_choices = {"": "Автоматически"}
-        if ma_players:
-            for eid, name in ma_players.items():
-                player_choices[eid] = f"{name}"
-        elif all_players:
+        # Direct API players first (most relevant when URL+token set)
+        for eid, name in direct_players.items():
+            player_choices[eid] = name
+        # HA-integrated players
+        for eid, name in ma_players.items():
+            if eid not in player_choices:
+                player_choices[eid] = name
+        # Fallback: all media players
+        if len(player_choices) <= 1:
             for eid, name in all_players.items():
                 player_choices[eid] = f"{name} (не MA)"
 
@@ -332,6 +366,18 @@ class OptionsFlowHandler(OptionsFlow):
             ): bool,
         }
 
+        # MA URL and token — shown FIRST so user can fill them in
+        schema_dict[vol.Optional(
+            "ma_url",
+            description={"suggested_value": defaults.get("ma_url", "")},
+        )] = str
+
+        schema_dict[vol.Optional(
+            "ma_token",
+            description={"suggested_value": defaults.get("ma_token", "")},
+        )] = str
+
+        # Player selection — dropdown if players found, text input otherwise
         if len(player_choices) > 1:
             schema_dict[vol.Optional(
                 "ma_player",
@@ -342,17 +388,6 @@ class OptionsFlowHandler(OptionsFlow):
                 "ma_player",
                 description={"suggested_value": defaults.get("ma_player", "")},
             )] = str
-
-        # MA URL and token for manual configuration
-        schema_dict[vol.Optional(
-            "ma_url",
-            description={"suggested_value": defaults.get("ma_url", "")},
-        )] = str
-
-        schema_dict[vol.Optional(
-            "ma_token",
-            description={"suggested_value": defaults.get("ma_token", "")},
-        )] = str
 
         if yandex_speakers:
             schema_dict[vol.Optional(

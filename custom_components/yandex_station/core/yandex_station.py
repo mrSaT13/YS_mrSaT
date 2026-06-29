@@ -997,20 +997,30 @@ class YandexStationBase(MediaBrowser, RestoreEntity):
             _LOGGER.debug(f"MA fallback check failed: {e}")
 
     def _get_active_ma_player(self):
-        """Check if MA is currently playing and return its entity_id, or None."""
+        """Check if MA is currently playing and return its entity_id, or None.
+
+        For direct API mode, returns the player_id string (not an HA entity).
+        For HA-integrated mode, returns the entity_id.
+        """
         try:
             from ..hass.music_assistant_bridge import get_bridge
             bridge = get_bridge(self.hass)
             if not bridge.is_enabled():
                 return None
 
-            # First check tracked active player
+            # Direct API mode: check if bridge has active playback
+            if bridge._use_direct_api:
+                tracked = bridge._active_ma_players.get(self.entity_id)
+                if tracked:
+                    return tracked  # player_id for direct API calls
+                return None
+
+            # HA-integrated mode: check tracked active player
             tracked = bridge._active_ma_players.get(self.entity_id)
             if tracked:
                 state = self.hass.states.get(tracked)
                 if state and state.state in ("playing", "paused"):
                     return tracked
-                # Stopped playing — clear tracking
                 bridge._active_ma_players.pop(self.entity_id, None)
 
             # Fallback: check configured/default MA player
@@ -1119,13 +1129,10 @@ class YandexStationBase(MediaBrowser, RestoreEntity):
             await self.glagol.send({"command": "rewind", "position": position})
 
     async def async_media_play(self):
-        ma_entity = self._get_active_ma_player()
-        if ma_entity:
-            _LOGGER.info(f"MA: redirecting play to {ma_entity}")
-            await self.hass.services.async_call(
-                "media_player", "media_play",
-                {"entity_id": ma_entity}, blocking=True,
-            )
+        ma_player = self._get_active_ma_player()
+        if ma_player:
+            _LOGGER.info(f"MA: redirecting play to {ma_player}")
+            await self._ma_send_command(ma_player, "media_play")
             return
         if self.local_state:
             await self.glagol.send({"command": "play"})
@@ -1138,13 +1145,10 @@ class YandexStationBase(MediaBrowser, RestoreEntity):
                 _LOGGER.error(f"Failed to play on {self.name}: {resp}")
 
     async def async_media_pause(self):
-        ma_entity = self._get_active_ma_player()
-        if ma_entity:
-            _LOGGER.info(f"MA: redirecting pause to {ma_entity}")
-            await self.hass.services.async_call(
-                "media_player", "media_pause",
-                {"entity_id": ma_entity}, blocking=True,
-            )
+        ma_player = self._get_active_ma_player()
+        if ma_player:
+            _LOGGER.info(f"MA: redirecting pause to {ma_player}")
+            await self._ma_send_command(ma_player, "media_pause")
             return
         if self.local_state:
             await self.glagol.send({"command": "stop"})
@@ -1156,17 +1160,39 @@ class YandexStationBase(MediaBrowser, RestoreEntity):
             else:
                 _LOGGER.error(f"Failed to pause on {self.name}: {resp}")
 
+    async def _ma_send_command(self, ma_player: str, service: str):
+        """Send command to MA — via direct API or HA service call."""
+        try:
+            from ..hass.music_assistant_bridge import get_bridge
+            bridge = get_bridge(self.hass)
+
+            if bridge._use_direct_api:
+                # Map HA service names to MA direct API commands
+                cmd_map = {
+                    "media_play": "play",
+                    "media_pause": "pause",
+                    "media_next_track": "next",
+                    "media_previous_track": "previous",
+                }
+                cmd = cmd_map.get(service, service)
+                await bridge._direct_post(
+                    f"/api/players/{ma_player}/command",
+                    {"command": cmd})
+            else:
+                await self.hass.services.async_call(
+                    "media_player", service,
+                    {"entity_id": ma_player}, blocking=True)
+        except Exception as e:
+            _LOGGER.error(f"MA command {service} failed: {e}")
+
     async def async_media_stop(self):
         await self.async_media_pause()
 
     async def async_media_previous_track(self):
-        ma_entity = self._get_active_ma_player()
-        if ma_entity:
-            _LOGGER.info(f"MA: redirecting prev to {ma_entity}")
-            await self.hass.services.async_call(
-                "media_player", "media_previous_track",
-                {"entity_id": ma_entity}, blocking=True,
-            )
+        ma_player = self._get_active_ma_player()
+        if ma_player:
+            _LOGGER.info(f"MA: redirecting prev to {ma_player}")
+            await self._ma_send_command(ma_player, "media_previous_track")
             return
         if self.local_state:
             await self.glagol.send({"command": "prev"})
@@ -1176,13 +1202,10 @@ class YandexStationBase(MediaBrowser, RestoreEntity):
                 _LOGGER.warning(f"Failed to previous track on {self.name}: {resp}")
 
     async def async_media_next_track(self):
-        ma_entity = self._get_active_ma_player()
-        if ma_entity:
-            _LOGGER.info(f"MA: redirecting next to {ma_entity}")
-            await self.hass.services.async_call(
-                "media_player", "media_next_track",
-                {"entity_id": ma_entity}, blocking=True,
-            )
+        ma_player = self._get_active_ma_player()
+        if ma_player:
+            _LOGGER.info(f"MA: redirecting next to {ma_player}")
+            await self._ma_send_command(ma_player, "media_next_track")
             return
         if self.local_state:
             await self.glagol.send({"command": "next"})
