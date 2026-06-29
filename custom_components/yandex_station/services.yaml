@@ -94,3 +94,43 @@ yandex_music_play:
             - "lossless"
             - "nq"
             - "lq"
+
+test_ma_voice:
+  name: Test MA Voice
+  description: Emulate a voice command and play via Music Assistant
+  fields:
+    text:
+      name: Text
+      description: "Voice command text (e.g. 'включи Rammstein')"
+      example: "включи Rammstein"
+      selector:
+        text:
+    entity_id:
+      name: Speaker
+      description: Speaker entity ID
+      example: "media_player.yandex_station"
+      selector:
+        entity:
+          domain: media_player
+          integration: yandex_station
+
+test_ma_direct:
+  name: Test MA Direct Play
+  description: Play directly via Music Assistant
+  fields:
+    query:
+      name: Query
+      description: "Search query (e.g. 'Rammstein')"
+      example: "Rammstein"
+      selector:
+        text:
+    media_type:
+      name: Media Type
+      description: "Type: artist, track, album"
+      example: "artist"
+      selector:
+        select:
+          options:
+            - "artist"
+            - "track"
+            - "album"

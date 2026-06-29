@@ -293,53 +293,77 @@ class OptionsFlowHandler(OptionsFlow):
 
         defaults = self.config_entry.options.get("music_assistant", {})
 
-        # Find MA player entities
-        ma_players = {}
-        if "music_assistant" in self.hass.data:
-            ec = self.hass.data.get("entity_components", {}).get("media_player")
-            if ec:
-                for entity in ec.entities:
-                    if (
-                        hasattr(entity, "player_id")
-                        and entity.platform
-                        and entity.platform.platform_name == "music_assistant"
-                    ):
-                        ma_players[entity.entity_id] = entity.name or entity.entity_id
+        from .hass.music_assistant_bridge import get_bridge
+        bridge = get_bridge(self.hass)
 
-        # Also list Yandex Station speakers
+        ma_players = bridge.get_all_ma_players()
+        all_players = bridge.get_all_media_players()
+
+        # Yandex Station speakers
         yandex_speakers = {}
         from .core.const import DATA_SPEAKERS
         speakers = self.hass.data.get(DOMAIN, {}).get(DATA_SPEAKERS, {})
         for did, speaker in speakers.items():
             entity = speaker.get("entity")
             if entity and entity.hass:
-                yandex_speakers[entity.entity_id] = speaker.get("name", entity.entity_id)
+                name = speaker.get("name", entity.entity_id)
+                yandex_speakers[entity.entity_id] = name
 
-        data = vol.Schema({
+        # MA status info
+        ma_status = []
+        ma_status.append(f"MA доступен: {'Да' if bridge.is_ma_available() else 'Нет'}")
+        ma_status.append(f"MA плееров: {len(ma_players)}")
+        if not bridge.is_ma_available():
+            ma_status.append("Укажите URL MA вручную ниже, если MA не обнаружен автоматически.")
+
+        # Build player choices
+        player_choices = {"": "Автоматически"}
+        if ma_players:
+            for eid, name in ma_players.items():
+                player_choices[eid] = f"{name}"
+        elif all_players:
+            for eid, name in all_players.items():
+                player_choices[eid] = f"{name} (не MA)"
+
+        schema_dict = {
             vol.Required(
                 "enabled",
                 default=defaults.get("enabled", False),
             ): bool,
-            vol.Optional(
+        }
+
+        if len(player_choices) > 1:
+            schema_dict[vol.Optional(
                 "ma_player",
                 default=defaults.get("ma_player", ""),
-            ): vol.In({**{"": "Автоматически"}, **ma_players}) if ma_players else str,
-            vol.Optional(
+            )] = vol.In(player_choices)
+        else:
+            schema_dict[vol.Optional(
+                "ma_player",
+                description={"suggested_value": defaults.get("ma_player", "")},
+            )] = str
+
+        # MA URL and token for manual configuration
+        schema_dict[vol.Optional(
+            "ma_url",
+            description={"suggested_value": defaults.get("ma_url", "")},
+        )] = str
+
+        schema_dict[vol.Optional(
+            "ma_token",
+            description={"suggested_value": defaults.get("ma_token", "")},
+        )] = str
+
+        if yandex_speakers:
+            schema_dict[vol.Optional(
                 "yandex_speaker",
                 default=defaults.get("yandex_speaker", ""),
-            ): vol.In({**{"": "Все колонки"}, **yandex_speakers}) if yandex_speakers else str,
-            vol.Optional(
-                "announce",
-                default=defaults.get("announce", True),
-            ): bool,
-            vol.Optional(
-                "clear_queue",
-                default=defaults.get("clear_queue", True),
-            ): bool,
-            vol.Optional(
-                "shuffle",
-                default=defaults.get("shuffle", True),
-            ): bool,
+            )] = vol.In({**{"": "Все колонки"}, **yandex_speakers})
+
+        schema_dict.update({
+            vol.Optional("announce", default=defaults.get("announce", True)): bool,
+            vol.Optional("clear_queue", default=defaults.get("clear_queue", True)): bool,
+            vol.Optional("shuffle", default=defaults.get("shuffle", True)): bool,
             vol.Optional(
                 "repeat",
                 default=defaults.get("repeat", "off"),
@@ -348,10 +372,7 @@ class OptionsFlowHandler(OptionsFlow):
                 "enqueue_mode",
                 default=defaults.get("enqueue_mode", "replace"),
             ): vol.In({"replace": "Заменить очередь", "next": "Добавить следующим", "add": "Добавить в конец"}),
-            vol.Optional(
-                "fallback_to_similar",
-                default=defaults.get("fallback_to_similar", True),
-            ): bool,
+            vol.Optional("fallback_to_similar", default=defaults.get("fallback_to_similar", True)): bool,
             vol.Optional(
                 "volume",
                 default=defaults.get("volume", 0),
@@ -360,10 +381,9 @@ class OptionsFlowHandler(OptionsFlow):
 
         return self.async_show_form(
             step_id="music_assistant",
-            data_schema=data,
+            data_schema=vol.Schema(schema_dict),
             description_placeholders={
-                "ma_count": str(len(ma_players)),
-                "speaker_count": str(len(yandex_speakers)),
+                "info": "\n".join(ma_status),
             }
         )
 

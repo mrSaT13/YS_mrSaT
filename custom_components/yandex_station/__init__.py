@@ -43,6 +43,7 @@ from .core.const import (
     DATA_SPEAKERS,
     DOMAIN,
 )
+from .hass.music_assistant_bridge import MA_DOMAIN
 from .core.yandex_glagol import YandexIOListener
 from .core.yandex_quasar import YandexQuasar
 from .core.yandex_session import YandexSession
@@ -368,6 +369,53 @@ async def _init_services(hass: HomeAssistant):
         "matrix_send_message",
         matrix_send_message,
     )
+
+    # MA test services
+    async def test_ma_voice(call: ServiceCall):
+        """Test: emulate voice command for MA."""
+        text = call.data.get("text", "включи Rammstein")
+        entity_id = call.data.get("entity_id")
+
+        from .hass.music_assistant_bridge import get_bridge
+        bridge = get_bridge(hass)
+
+        _LOGGER.info(f"TEST MA VOICE: '{text}'")
+
+        for did, speaker in speakers.items():
+            entity = speaker.get("entity")
+            if entity and entity.entity_id == entity_id:
+                if hasattr(entity, 'glagol') and entity.glagol:
+                    entity.glagol._trigger_ma_search(text)
+                    return {"status": "ok", "message": f"Request '{text}' sent"}
+                else:
+                    return {"status": "error", "message": "Glagol not available"}
+
+        return {"status": "error", "message": "Speaker not found"}
+
+    async def test_ma_direct(call: ServiceCall):
+        """Test: direct playback via MA."""
+        query = call.data.get("query", "Rammstein")
+        media_type = call.data.get("media_type", "artist")
+
+        from .hass.music_assistant_bridge import get_bridge
+        bridge = get_bridge(hass)
+
+        ma_player = bridge._get_configured_ma_player()
+        if not ma_player:
+            return {"status": "error", "message": "MA player not configured"}
+
+        try:
+            await hass.services.async_call(
+                MA_DOMAIN, "play_media",
+                {"entity_id": ma_player, "media_id": query, "media_type": media_type},
+                blocking=True
+            )
+            return {"status": "ok", "message": f"Playing '{query}'"}
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+
+    hass.services.async_register(DOMAIN, "test_ma_voice", test_ma_voice)
+    hass.services.async_register(DOMAIN, "test_ma_direct", test_ma_direct)
 
 
 async def _setup_entry_from_config(hass: HomeAssistant):

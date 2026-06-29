@@ -13,10 +13,14 @@ class MusicAssistantBridge:
         self.hass = hass
         self._last_search_time = {}
         self._options = {}
+        self._active_ma_players = {}  # speaker_entity_id -> ma_entity_id
 
     def load_options(self, config_entry):
         self._options = config_entry.options.get("music_assistant", {})
-        _LOGGER.debug(f"MA bridge options loaded: {self._options}")
+        self._ma_url = self._options.get("ma_url", "")
+        self._ma_token = self._options.get("ma_token", "")
+        _LOGGER.debug(f"MA bridge options loaded: enabled={self.is_enabled()}, "
+                      f"ma_url={self._ma_url}, player={self._get_configured_ma_player()}")
 
     def is_enabled(self):
         return self._options.get("enabled", False)
@@ -78,6 +82,47 @@ class MusicAssistantBridge:
                     and entity.platform.platform_name == MA_DOMAIN):
                 return entity.entity_id
         return None
+
+    def get_all_ma_players(self) -> dict:
+        """Get all Music Assistant media_player entities."""
+        players = {}
+        try:
+            from homeassistant.helpers import entity_registry as er
+            er_registry = er.async_get(self.hass)
+            for entity_id, entity in er_registry.entities.items():
+                if entity.platform == MA_DOMAIN and entity.domain == "media_player":
+                    state = self.hass.states.get(entity_id)
+                    name = state.attributes.get("friendly_name", entity_id) if state else entity_id
+                    players[entity_id] = f"{name} (MA)"
+        except Exception as e:
+            _LOGGER.debug(f"MA player discovery failed: {e}")
+
+        if not players:
+            try:
+                ec = self.hass.data.get("entity_components", {}).get("media_player")
+                if ec:
+                    for entity in ec.entities:
+                        if (hasattr(entity, "player_id") and entity.platform
+                                and entity.platform.platform_name == MA_DOMAIN):
+                            players[entity.entity_id] = f"{entity.name} (MA)"
+            except Exception as e:
+                _LOGGER.debug(f"MA player discovery via entity_components failed: {e}")
+
+        return players
+
+    def get_all_media_players(self) -> dict:
+        """Get all media_player entities."""
+        players = {}
+        try:
+            all_entities = self.hass.states.async_entity_ids("media_player")
+            for entity_id in all_entities:
+                state = self.hass.states.get(entity_id)
+                if state:
+                    name = state.attributes.get("friendly_name", entity_id)
+                    players[entity_id] = name
+        except Exception as e:
+            _LOGGER.debug(f"Media player discovery failed: {e}")
+        return players
 
     def parse_voice_request(self, player_state):
         title = player_state.get("title", "")
@@ -176,6 +221,7 @@ class MusicAssistantBridge:
 
             if ok:
                 await self._apply_playback_settings(ma_entity)
+                self._active_ma_players[speaker_entity_id] = ma_entity
 
             return ok
         except Exception as e:

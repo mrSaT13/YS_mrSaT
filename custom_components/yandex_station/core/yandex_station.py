@@ -180,6 +180,10 @@ class YandexStationBase(MediaBrowser, RestoreEntity):
         self.device = device
         self.requests = {}
         self.last_voice_text = None  # ASR: recognized voice from microphone
+        self.last_voice_command = None
+        self.last_voice_time = None
+        self.voice_commands_count = 0
+        self._ma_playing_on = None  # entity_id of MA player that's currently active
 
         self._attr_assumed_state = True
         self._attr_is_volume_muted = False
@@ -217,9 +221,24 @@ class YandexStationBase(MediaBrowser, RestoreEntity):
 
     @property
     def extra_state_attributes(self):
+        attrs = {}
+
         if self.local_state:
-            return {"alice_state": self.local_state["aliceState"]}
-        return None
+            attrs["alice_state"] = self.local_state["aliceState"]
+
+        # Voice command attributes
+        if self.last_voice_command:
+            attrs["last_voice_command"] = self.last_voice_command
+        if self.last_voice_time:
+            attrs["last_voice_time"] = self.last_voice_time
+        if self.voice_commands_count:
+            attrs["voice_commands_count"] = self.voice_commands_count
+
+        # MA status
+        if self._ma_playing_on:
+            attrs["ma_active_player"] = self._ma_playing_on
+
+        return attrs if attrs else None
 
     def on_update(self, device: dict):
         if not self.hass:
@@ -569,7 +588,10 @@ class YandexStationBase(MediaBrowser, RestoreEntity):
             # Store recognized voice text for MA bridge
             if asr_text:
                 self.last_voice_text = asr_text
-                _LOGGER.info(f"ASR recognized: '{asr_text}'")
+                self.last_voice_command = asr_text
+                self.last_voice_time = datetime.now(timezone.utc).isoformat()
+                self.voice_commands_count += 1
+                _LOGGER.info(f"ASR recognized: '{asr_text}' (#{self.voice_commands_count})")
 
             # Extract voice_response — contains what Alice heard and her reply
             voice_resp = vins.get("voice_response")
@@ -974,19 +996,33 @@ class YandexStationBase(MediaBrowser, RestoreEntity):
         except Exception as e:
             _LOGGER.debug(f"MA fallback check failed: {e}")
 
-            import asyncio
-            asyncio.create_task(
-                bridge.search_and_play(
-                    self.entity_id,
-                    artist=request["artist"],
-                    track=request["track"],
-                    request_type=request["type"],
-                    announce=True,
-                )
-            )
+    def _get_active_ma_player(self):
+        """Check if MA is currently playing and return its entity_id, or None."""
+        try:
+            from ..hass.music_assistant_bridge import get_bridge
+            bridge = get_bridge(self.hass)
+            if not bridge.is_enabled():
+                return None
 
-        except Exception as e:
-            _LOGGER.debug(f"MA fallback check failed: {e}")
+            # First check tracked active player
+            tracked = bridge._active_ma_players.get(self.entity_id)
+            if tracked:
+                state = self.hass.states.get(tracked)
+                if state and state.state in ("playing", "paused"):
+                    return tracked
+                # Stopped playing — clear tracking
+                bridge._active_ma_players.pop(self.entity_id, None)
+
+            # Fallback: check configured/default MA player
+            ma_entity = bridge.get_ma_entity_for_speaker(self.entity_id)
+            if not ma_entity:
+                return None
+            state = self.hass.states.get(ma_entity)
+            if state and state.state in ("playing", "paused"):
+                return ma_entity
+        except Exception:
+            pass
+        return None
 
     # BASE MEDIA PLAYER FUNCTIONS
 
@@ -1083,6 +1119,14 @@ class YandexStationBase(MediaBrowser, RestoreEntity):
             await self.glagol.send({"command": "rewind", "position": position})
 
     async def async_media_play(self):
+        ma_entity = self._get_active_ma_player()
+        if ma_entity:
+            _LOGGER.info(f"MA: redirecting play to {ma_entity}")
+            await self.hass.services.async_call(
+                "media_player", "media_play",
+                {"entity_id": ma_entity}, blocking=True,
+            )
+            return
         if self.local_state:
             await self.glagol.send({"command": "play"})
         else:
@@ -1094,6 +1138,14 @@ class YandexStationBase(MediaBrowser, RestoreEntity):
                 _LOGGER.error(f"Failed to play on {self.name}: {resp}")
 
     async def async_media_pause(self):
+        ma_entity = self._get_active_ma_player()
+        if ma_entity:
+            _LOGGER.info(f"MA: redirecting pause to {ma_entity}")
+            await self.hass.services.async_call(
+                "media_player", "media_pause",
+                {"entity_id": ma_entity}, blocking=True,
+            )
+            return
         if self.local_state:
             await self.glagol.send({"command": "stop"})
         else:
@@ -1108,6 +1160,14 @@ class YandexStationBase(MediaBrowser, RestoreEntity):
         await self.async_media_pause()
 
     async def async_media_previous_track(self):
+        ma_entity = self._get_active_ma_player()
+        if ma_entity:
+            _LOGGER.info(f"MA: redirecting prev to {ma_entity}")
+            await self.hass.services.async_call(
+                "media_player", "media_previous_track",
+                {"entity_id": ma_entity}, blocking=True,
+            )
+            return
         if self.local_state:
             await self.glagol.send({"command": "prev"})
         else:
@@ -1116,6 +1176,14 @@ class YandexStationBase(MediaBrowser, RestoreEntity):
                 _LOGGER.warning(f"Failed to previous track on {self.name}: {resp}")
 
     async def async_media_next_track(self):
+        ma_entity = self._get_active_ma_player()
+        if ma_entity:
+            _LOGGER.info(f"MA: redirecting next to {ma_entity}")
+            await self.hass.services.async_call(
+                "media_player", "media_next_track",
+                {"entity_id": ma_entity}, blocking=True,
+            )
+            return
         if self.local_state:
             await self.glagol.send({"command": "next"})
         else:
