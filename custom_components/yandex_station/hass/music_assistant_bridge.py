@@ -210,7 +210,13 @@ class MusicAssistantBridge:
                 if entity.platform == MA_DOMAIN and entity.domain == "media_player":
                     state = self.hass.states.get(entity_id)
                     name = state.attributes.get("friendly_name", entity_id) if state else entity_id
-                    players[entity_id] = f"{name} (MA)"
+                    # Add entity_id suffix to distinguish duplicates
+                    suffix = entity_id.split(".")[-1]
+                    if suffix != name.lower().replace(" ", "_"):
+                        label = f"{name} [{suffix}] (MA)"
+                    else:
+                        label = f"{name} (MA)"
+                    players[entity_id] = label
         except Exception as e:
             _LOGGER.debug(f"MA player discovery failed: {e}")
 
@@ -221,7 +227,13 @@ class MusicAssistantBridge:
                     for entity in ec.entities:
                         if (hasattr(entity, "player_id") and entity.platform
                                 and entity.platform.platform_name == MA_DOMAIN):
-                            players[entity.entity_id] = f"{entity.name} (MA)"
+                            suffix = entity.entity_id.split(".")[-1]
+                            name = entity.name or entity.entity_id
+                            if suffix != name.lower().replace(" ", "_"):
+                                label = f"{name} [{suffix}] (MA)"
+                            else:
+                                label = f"{name} (MA)"
+                            players[entity.entity_id] = label
             except Exception as e:
                 _LOGGER.debug(f"MA player discovery via entity_components failed: {e}")
 
