@@ -1083,6 +1083,18 @@ class YandexStationBase(MediaBrowser, RestoreEntity):
                 """Debounced fallback — waits 1.5s for state to stabilize."""
                 try:
                     await asyncio.sleep(1.5)
+
+                    # Try direct Yandex bypass first (HMAC trick)
+                    query_str = f"{artist} {track}" if track else artist
+                    direct_ok = await self._try_direct_yandex_bypass(query_str)
+                    if direct_ok:
+                        _LOGGER.info(f"Direct bypass fallback: started playing '{query_str}'")
+                        glagol = getattr(self, 'glagol', None)
+                        if glagol:
+                            glagol._ma_pending_query = None
+                        return
+
+                    # Fallback to MA
                     await bridge.search_and_play(
                         self.entity_id,
                         artist=artist,
