@@ -134,3 +134,30 @@ test_ma_direct:
             - "artist"
             - "track"
             - "album"
+
+yandex_station_search:
+  name: Search and Play Music
+  description: "Search and play music using direct Yandex bypass (HMAC) or Music Assistant fallback"
+  target:
+    entity:
+      integration: yandex_station
+      domain: media_player
+  fields:
+    query:
+      name: Query
+      description: "Search query (artist, track, album)"
+      example: "Металлика"
+      required: true
+      selector:
+        text:
+    source:
+      name: Source
+      description: "Search source: auto (try Yandex then MA), yandex (direct only), ma (MA only)"
+      example: "auto"
+      default: "auto"
+      selector:
+        select:
+          options:
+            - "auto"
+            - "yandex"
+            - "ma"

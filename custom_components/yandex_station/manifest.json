@@ -13,6 +13,6 @@
   "documentation": "https://github.com/mrSaT13/YandexStation",
   "iot_class": "local_push",
   "issue_tracker": "https://github.com/mrSaT13/YandexStation/issues",
-  "requirements": ["matrix-nio"],
+  "requirements": ["matrix-nio", "cryptography>=41.0.0"],
   "version": "3.23.0"
 }
