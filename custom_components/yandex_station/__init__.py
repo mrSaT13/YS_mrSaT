@@ -417,6 +417,108 @@ async def _init_services(hass: HomeAssistant):
     hass.services.async_register(DOMAIN, "test_ma_voice", test_ma_voice)
     hass.services.async_register(DOMAIN, "test_ma_direct", test_ma_direct)
 
+    # Search service - search and play music via direct Yandex bypass or MA
+    async def yandex_station_search(call: ServiceCall):
+        """Search and play music using direct Yandex bypass or MA fallback.
+
+        Usage:
+            service: yandex_station_search
+            target:
+              entity_id: media_player.yandex_station_xxx
+            data:
+              query: "Металлика"
+              source: "auto"  # auto/yandex/ma
+        """
+        try:
+            from .core.music_plus_bypass import search_and_get_url, get_stream_url_for_track
+            from .hass.music_assistant_bridge import get_bridge
+
+            try:
+                entity_ids = await service.async_extract_entity_ids(call)
+            except TypeError:
+                entity_ids = await service.async_extract_entity_ids(hass, call)
+
+            query = call.data.get("query")
+            source = call.data.get("source", "auto")
+
+            if not query:
+                return {"status": "error", "message": "query parameter required"}
+
+            _LOGGER.info(f"yandex_station_search: query='{query}', source={source}")
+
+            for did, speaker in speakers.items():
+                entity = speaker.get("entity")
+                if not entity or entity.entity_id not in entity_ids:
+                    continue
+
+                # Try direct Yandex bypass first
+                if source in ("auto", "yandex"):
+                    try:
+                        session = getattr(entity.quasar, 'session', None)
+                        if session:
+                            result = await search_and_get_url(session, query)
+                            if result and result.get("url"):
+                                url = result["url"]
+
+                                # Decrypt if needed
+                                if result.get("encrypted") and result.get("decrypt_key"):
+                                    url = await get_stream_url_for_track(session, result["track_id"])
+                                    if not url:
+                                        _LOGGER.debug("Failed to decrypt track")
+                                        continue
+
+                                # Stop current playback
+                                if entity.glagol:
+                                    await entity.glagol.send({"command": "stop"})
+
+                                # Play via Glagol
+                                if entity.glagol:
+                                    payload = {
+                                        "command": "playMusic",
+                                        "type": "url",
+                                        "url": url,
+                                    }
+                                    if result.get("title"):
+                                        payload["title"] = result["title"]
+                                    if result.get("artist"):
+                                        payload["artist"] = result["artist"]
+
+                                    resp = await entity.glagol.send(payload)
+                                    if resp and resp.get("status") == "ok":
+                                        _LOGGER.info(f"yandex_station_search: playing '{result.get('title')}' by {result.get('artist')}")
+                                        return {"status": "ok", "message": f"Playing '{result.get('title')}' by {result.get('artist')}", "source": "yandex"}
+                    except Exception as e:
+                        _LOGGER.debug(f"Direct Yandex search failed: {e}")
+
+                # Fallback to MA
+                if source in ("auto", "ma"):
+                    bridge = get_bridge(hass)
+                    if bridge.is_enabled():
+                        try:
+                            ok = await bridge.search_and_play(
+                                entity.entity_id,
+                                artist=query,
+                                request_type="artist",
+                                announce=True,
+                            )
+                            if ok:
+                                return {"status": "ok", "message": f"Playing '{query}' via MA", "source": "ma"}
+                        except Exception as e:
+                            _LOGGER.debug(f"MA search failed: {e}")
+
+            return {"status": "error", "message": f"Failed to play '{query}'"}
+
+        except Exception as e:
+            _LOGGER.error(f"yandex_station_search failed: {e}")
+            return {"status": "error", "message": str(e)}
+
+    hass.services.async_register(
+        DOMAIN,
+        "yandex_station_search",
+        yandex_station_search,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+
 
 async def _setup_entry_from_config(hass: HomeAssistant):
     """Support legacy config from YAML."""
