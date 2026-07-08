@@ -184,6 +184,9 @@ class YandexStationBase(MediaBrowser, RestoreEntity):
         self.last_voice_time = None
         self.voice_commands_count = 0
         self._ma_playing_on = None  # entity_id of MA player that's currently active
+        self._ma_fallback_task = None  # Debounced MA fallback task
+        self._ma_vins_task = None  # Debounced MA vins fallback task
+        self._voice_history = []  # History of voice commands (last 10)
 
         self._attr_assumed_state = True
         self._attr_is_volume_muted = False
@@ -237,6 +240,21 @@ class YandexStationBase(MediaBrowser, RestoreEntity):
         # MA status
         if self._ma_playing_on:
             attrs["ma_active_player"] = self._ma_playing_on
+
+        # Device capabilities (auto-detected)
+        from .quasar_info import get_capabilities
+        caps = get_capabilities(self.device_platform)
+        attrs["capabilities"] = caps
+
+        # Connection info
+        if self.local_state:
+            attrs["connection_mode"] = "local" if self.glagol else "cloud"
+        else:
+            attrs["connection_mode"] = "cloud"
+
+        # Last voice commands history (last 5)
+        if hasattr(self, '_voice_history') and self._voice_history:
+            attrs["voice_history"] = self._voice_history[-5:]
 
         return attrs if attrs else None
 
@@ -591,6 +609,14 @@ class YandexStationBase(MediaBrowser, RestoreEntity):
                 self.last_voice_command = asr_text
                 self.last_voice_time = datetime.now(timezone.utc).isoformat()
                 self.voice_commands_count += 1
+                # Add to voice history (keep last 10)
+                self._voice_history.append({
+                    "text": asr_text,
+                    "time": self.last_voice_time,
+                    "count": self.voice_commands_count,
+                })
+                if len(self._voice_history) > 10:
+                    self._voice_history = self._voice_history[-10:]
                 _LOGGER.info(f"ASR recognized: '{asr_text}' (#{self.voice_commands_count})")
 
             # Extract voice_response — contains what Alice heard and her reply
@@ -784,18 +810,52 @@ class YandexStationBase(MediaBrowser, RestoreEntity):
 
             full_text = " ".join(texts).lower()
 
-            # Check for music failure
-            is_fail = any(p in full_text for p in [
-                "не могу", "нет подписки", "подключите", "платн",
-                "не удалось", "ошибк", "не доступн", "не нашёл",
-                "не нашел", "ничего не", "нет доступа", "ограничен",
-                "только по подписк",
-            ])
-            is_music = any(p in full_text for p in [
+            # Detect music failure using multiple signals (more robust than substring matching)
+            is_fail = False
+            is_music = False
+
+            # Signal 1: Check for subscription-related fields in directives
+            for directive in response.get("directives", []):
+                payload = directive.get("payload", {})
+                # Subscription required flag
+                if payload.get("subscription_required") or payload.get("need_subscription"):
+                    is_fail = True
+                # Purchase/subscription actions
+                if payload.get("type") in ("subscription", "purchase", "paywall"):
+                    is_fail = True
+                # Check for "preview" in stream type (preview = no full access)
+                if payload.get("stream_type") == "preview":
+                    is_fail = True
+
+            # Signal 2: Check playerState for preview content
+            if state := data.get("state", {}):
+                if player := state.get("playerState", {}):
+                    # Preview tracks have specific playerType or duration < 60s
+                    if player.get("playerType") == "music_preview":
+                        is_fail = True
+                    # Check for "preview" in extra
+                    if extra := player.get("extra", {}):
+                        if extra.get("stateType") == "preview":
+                            is_fail = True
+
+            # Signal 3: Text-based fallback (still needed for edge cases)
+            if not is_fail:
+                # More specific patterns to reduce false positives
+                fail_patterns = [
+                    "нет подписки", "подключите подписку", "оформите подписку",
+                    "только по подписке", "нет доступа к треку",
+                    "доступно по подписке", "купите подписку",
+                    "need subscription", "subscription required",
+                ]
+                is_fail = any(p in full_text for p in fail_patterns)
+
+            # Signal 4: Check if this looks like a music request
+            music_patterns = [
                 "воспроизвест", "включ", "музык", "трек", "песн",
                 "исполнител", "артист", "альбом", "плейлист",
                 "проигр", "запуст", "найди", "найти", "найдено",
-            ])
+            ]
+            is_music = any(p in full_text for p in music_patterns)
 
             if not (is_fail and is_music):
                 return
@@ -850,15 +910,45 @@ class YandexStationBase(MediaBrowser, RestoreEntity):
                 except Exception:
                     pass
 
+            # Debounce: cancel previous pending task
+            if hasattr(self, '_ma_vins_task') and self._ma_vins_task:
+                self._ma_vins_task.cancel()
+
             import asyncio
-            asyncio.create_task(
-                bridge.search_and_play(
-                    self.entity_id,
-                    artist=query,
-                    request_type="artist",
-                    announce=True,
-                )
-            )
+
+            async def _deferred_vins_fallback():
+                """Debounced vins fallback — waits 1s for state to stabilize."""
+                try:
+                    await asyncio.sleep(1.0)
+                    # Check if MA is already playing this
+                    active_player = self._get_active_ma_player()
+                    if active_player:
+                        _LOGGER.info(f"MA vins: already playing on {active_player}, skipping")
+                        return
+
+                    # Try direct Yandex bypass first (HMAC trick)
+                    direct_ok = await self._try_direct_yandex_bypass(query)
+                    if direct_ok:
+                        _LOGGER.info(f"Direct bypass: successfully started playing '{query}'")
+                        return
+
+                    # Fallback to MA
+                    ok = await bridge.search_and_play(
+                        self.entity_id,
+                        artist=query,
+                        request_type="artist",
+                        announce=True,
+                    )
+                    if ok:
+                        _LOGGER.info(f"MA vins: successfully started playing '{query}'")
+                    else:
+                        _LOGGER.debug(f"MA vins: failed to play '{query}'")
+                except asyncio.CancelledError:
+                    pass
+                except Exception as e:
+                    _LOGGER.debug(f"MA vins deferred fallback failed: {e}")
+
+            self._ma_vins_task = asyncio.create_task(_deferred_vins_fallback())
 
         except Exception as e:
             _LOGGER.debug(f"MA vins check failed: {e}")
@@ -940,7 +1030,10 @@ class YandexStationBase(MediaBrowser, RestoreEntity):
             _LOGGER.debug(f"MA voice check failed: {e}")
 
     def _check_music_assistant_fallback(self, player_state: dict):
-        """Check if MA fallback is needed when speaker plays preview/error."""
+        """Check if MA fallback is needed when speaker plays preview/error.
+
+        Uses debounce to prevent multiple rapid task creation.
+        """
         try:
             from ..hass.music_assistant_bridge import get_bridge
 
@@ -962,11 +1055,18 @@ class YandexStationBase(MediaBrowser, RestoreEntity):
             # Check if this is a preview or error (duration <= 60s)
             duration = player_state.get("duration", 0)
             if duration and duration > 60000:
-                # Full track playing - clear pending query
+                # Full track playing - cancel pending fallback and clear
+                if hasattr(self, '_ma_fallback_task') and self._ma_fallback_task:
+                    self._ma_fallback_task.cancel()
+                    self._ma_fallback_task = None
                 glagol = getattr(self, 'glagol', None)
                 if glagol:
                     glagol._ma_pending_query = None
                 return
+
+            # Debounce: cancel previous pending task
+            if hasattr(self, '_ma_fallback_task') and self._ma_fallback_task:
+                self._ma_fallback_task.cancel()
 
             # Use the CORRECT name from playerState (resolved by Alice)
             artist = request["artist"]
@@ -978,23 +1078,100 @@ class YandexStationBase(MediaBrowser, RestoreEntity):
             )
 
             import asyncio
-            asyncio.create_task(
-                bridge.search_and_play(
-                    self.entity_id,
-                    artist=artist,
-                    track=track,
-                    request_type=request["type"],
-                    announce=True,
-                )
-            )
 
-            # Clear pending query
-            glagol = getattr(self, 'glagol', None)
-            if glagol:
-                glagol._ma_pending_query = None
+            async def _deferred_fallback():
+                """Debounced fallback — waits 1.5s for state to stabilize."""
+                try:
+                    await asyncio.sleep(1.5)
+                    await bridge.search_and_play(
+                        self.entity_id,
+                        artist=artist,
+                        track=track,
+                        request_type=request["type"],
+                        announce=True,
+                    )
+                    # Clear pending query
+                    glagol = getattr(self, 'glagol', None)
+                    if glagol:
+                        glagol._ma_pending_query = None
+                except asyncio.CancelledError:
+                    pass
+                except Exception as e:
+                    _LOGGER.debug(f"MA deferred fallback failed: {e}")
+
+            self._ma_fallback_task = asyncio.create_task(_deferred_fallback())
 
         except Exception as e:
             _LOGGER.debug(f"MA fallback check failed: {e}")
+
+    async def _try_direct_yandex_bypass(self, query: str) -> bool:
+        """Try to play music using direct Yandex API bypass (HMAC trick).
+
+        This uses the music_plus_bypass module to get a direct URL
+        without Yandex Plus subscription, then plays it via Glagol.
+
+        Returns True if successful, False otherwise.
+        """
+        try:
+            from .music_plus_bypass import search_and_get_url, get_stream_url_for_track
+
+            session = getattr(self.quasar, 'session', None)
+            if not session:
+                return False
+
+            _LOGGER.info(f"Direct bypass: searching for '{query}'")
+
+            # Search and get URL
+            result = await search_and_get_url(session, query)
+            if not result:
+                _LOGGER.debug(f"Direct bypass: no results for '{query}'")
+                return False
+
+            url = result.get("url")
+            if not url:
+                _LOGGER.debug(f"Direct bypass: no URL for '{query}'")
+                return False
+
+            # If encrypted, try to get decrypted URL
+            if result.get("encrypted") and result.get("decrypt_key"):
+                url = await get_stream_url_for_track(session, result["track_id"])
+                if not url:
+                    _LOGGER.debug(f"Direct bypass: failed to decrypt track")
+                    return False
+
+            _LOGGER.info(f"Direct bypass: got URL for '{result.get('title')}' by {result.get('artist')}")
+
+            # Stop current playback first
+            if self.glagol:
+                await self.glagol.send({"command": "stop"})
+
+            # Play via Glagol
+            if self.glagol:
+                import json
+                # Build playMusic payload
+                payload = {
+                    "command": "playMusic",
+                    "type": "url",
+                    "url": url,
+                }
+                # Add metadata if available
+                if result.get("title"):
+                    payload["title"] = result["title"]
+                if result.get("artist"):
+                    payload["artist"] = result["artist"]
+
+                resp = await self.glagol.send(payload)
+                if resp and resp.get("status") == "ok":
+                    _LOGGER.info(f"Direct bypass: started playing '{query}'")
+                    return True
+                else:
+                    _LOGGER.debug(f"Direct bypass: playMusic failed: {resp}")
+
+            return False
+
+        except Exception as e:
+            _LOGGER.debug(f"Direct bypass failed: {e}")
+            return False
 
     def _get_active_ma_player(self):
         """Check if MA is currently playing and return its entity_id, or None.

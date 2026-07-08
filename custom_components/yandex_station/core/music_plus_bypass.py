@@ -4,6 +4,7 @@
 - Использует Desktop HMAC ключ вместо Android
 - Повторяет запросы если trackId не совпадает (реклама)
 - Проверяет.trackId в ответе
+- Дешифрует зашифрованные треки (AES-CTR-128)
 """
 
 import asyncio
@@ -29,6 +30,9 @@ DESKTOP_HEADERS = {
     "X-Yandex-Music-Without-Invocation-Info": "1",
 }
 
+# Headers to remove (from YandexMusicBetaMod patcher)
+BANNED_HEADERS = ["x-yandex-music-device", "x-request-id"]
+
 # Quality levels
 QUALITY_LOSSLESS = "lossless"
 QUALITY_NQ = "nq"  # normal quality
@@ -48,6 +52,84 @@ def _sign_hmac(secret_key: str, *args) -> str:
     msg = "".join(str(i) for i in args).replace(",", "").encode()
     hmac_hash = hmac.new(secret_key.encode(), msg, hashlib.sha256).digest()
     return base64.b64encode(hmac_hash).decode()[:-1]
+
+
+async def decrypt_yandex_audio(encrypted_data: bytes, secret_key_hex: str) -> bytes:
+    """Decrypt Yandex Music encrypted audio stream.
+
+    Uses AES-CTR-128 algorithm from YandexMusicBetaMod.
+    The secret_key_hex is hex-encoded key from get-file-info response.
+
+    Args:
+        encrypted_data: encrypted audio bytes
+        secret_key_hex: hex-encoded AES key from downloadInfo
+
+    Returns:
+        Decrypted audio bytes
+    """
+    try:
+        from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+        from cryptography.hazmat.backends import default_backend
+    except ImportError:
+        _LOGGER.error("cryptography package required for audio decryption: pip install cryptography")
+        return encrypted_data
+
+    # Convert hex key to bytes
+    key_bytes = bytes.fromhex(secret_key_hex)
+
+    # AES-CTR with zero IV (as in YandexMusicBetaMod)
+    iv = b'\x00' * 16
+
+    cipher = Cipher(
+        algorithms.AES(key_bytes),
+        modes.CTR(iv),
+        backend=default_backend()
+    )
+    decryptor = cipher.decryptor()
+
+    # Stream decryption in chunks
+    chunk_size = 16384  # 16KB chunks
+    decrypted_chunks = []
+    for i in range(0, len(encrypted_data), chunk_size):
+        chunk = encrypted_data[i:i + chunk_size]
+        decrypted_chunks.append(decryptor.update(chunk))
+
+    decrypted_chunks.append(decryptor.finalize())
+    return b''.join(decrypted_chunks)
+
+
+async def stream_decrypt_yandex_audio(
+    encrypted_data: bytes,
+    secret_key_hex: str,
+    chunk_size: int = 16384,
+):
+    """Generator for streaming decryption of Yandex Music audio.
+
+    Yields decrypted chunks for memory-efficient processing.
+    """
+    try:
+        from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+        from cryptography.hazmat.backends import default_backend
+    except ImportError:
+        _LOGGER.error("cryptography package required for audio decryption")
+        yield encrypted_data
+        return
+
+    key_bytes = bytes.fromhex(secret_key_hex)
+    iv = b'\x00' * 16
+
+    cipher = Cipher(
+        algorithms.AES(key_bytes),
+        modes.CTR(iv),
+        backend=default_backend()
+    )
+    decryptor = cipher.decryptor()
+
+    for i in range(0, len(encrypted_data), chunk_size):
+        chunk = encrypted_data[i:i + chunk_size]
+        yield decryptor.update(chunk)
+
+    yield decryptor.finalize()
 
 
 async def get_file_info_desktop(
@@ -256,29 +338,111 @@ async def get_working_track_url(
     session: YandexSession,
     track_id: int | str,
     quality: str = QUALITY_LOSSLESS,
-) -> str | None:
+) -> dict | None:
     """Get a working download URL for a track.
 
     Tries Desktop approach first (with retries), then falls back to Android.
-    Returns direct URL or None if all attempts fail.
+    Returns dict with keys: url, codec, encrypted, decrypt_key
+    or None if all attempts fail.
     """
     # Try Desktop approach (with ad bypass retries)
     info = await get_file_info_desktop(session, track_id, quality)
-    if info and info.get("direct_url"):
-        return info["direct_url"]
+    if info:
+        result = _extract_download_info(info)
+        if result:
+            return result
 
     # Try Android approach
     info = await get_file_info_android(session, track_id, quality)
-    if info and info.get("direct_url"):
-        return info["direct_url"]
+    if info:
+        result = _extract_download_info(info)
+        if result:
+            return result
 
     # Try with lower quality
     if quality != QUALITY_LQ:
         info = await get_file_info_desktop(session, track_id, QUALITY_NQ)
-        if info and info.get("direct_url"):
-            return info["direct_url"]
+        if info:
+            result = _extract_download_info(info)
+            if result:
+                return result
 
     return None
+
+
+def _extract_download_info(info: dict) -> dict | None:
+    """Extract download info from get-file-info response.
+
+    Returns dict with: url, codec, encrypted, decrypt_key
+    """
+    try:
+        direct_url = info.get("directUrl") or info.get("direct_url")
+        if not direct_url:
+            return None
+
+        codec = info.get("codec", "mp3")
+        encrypted = info.get("encrypted", False)
+        decrypt_key = info.get("key") or info.get("decryptKey")
+
+        return {
+            "url": direct_url,
+            "codec": codec,
+            "encrypted": encrypted,
+            "decrypt_key": decrypt_key,
+            "bitrate": info.get("bitrateInKbps", 0),
+            "file_size": info.get("fileSize", 0),
+        }
+    except Exception as e:
+        _LOGGER.debug(f"extract_download_info failed: {e}")
+        return None
+
+
+async def check_account_has_plus(session: YandexSession) -> bool:
+    """Check if account has Yandex Plus subscription.
+
+    Note: This checks real status, not spoofed.
+    """
+    try:
+        r = await session.get(
+            "https://api.music.yandex.net/account/about",
+            headers=DESKTOP_HEADERS,
+            timeout=10,
+        )
+        raw = await r.json()
+        if "result" not in raw:
+            return False
+        return raw["result"].get("hasPlus", False)
+    except Exception as e:
+        _LOGGER.debug(f"check_account_has_plus failed: {e}")
+        return False
+
+
+async def get_track_download_info(
+    session: YandexSession,
+    track_id: int | str,
+    quality: str = QUALITY_LOSSLESS,
+) -> dict | None:
+    """Get full download info for a track including decryption details.
+
+    Returns dict with:
+        - url: direct download URL
+        - codec: audio codec (mp3, flac, aac)
+        - encrypted: whether stream is encrypted
+        - decrypt_key: hex key for AES decryption (if encrypted)
+        - bitrate: bitrate in kbps
+        - file_size: file size in bytes
+    """
+    info = await get_working_track_url(session, track_id, quality)
+    if not info:
+        return None
+
+    # If encrypted, try to get decryption key
+    if info.get("encrypted") and not info.get("decrypt_key"):
+        # Some responses include key directly
+        # For now, return as-is — decryption will be handled by caller
+        pass
+
+    return info
 
 
 async def search_and_get_url(
@@ -289,7 +453,7 @@ async def search_and_get_url(
     """Search for a track and get a working download URL.
 
     Returns:
-        dict with keys: track_id, title, artist, duration_ms, direct_url
+        dict with keys: track_id, title, artist, duration_ms, url, codec, encrypted, decrypt_key
         or None if not found
 
     Special case: if track is premium-only, returns dict with premium_message
@@ -333,7 +497,10 @@ async def search_and_get_url(
                     "title": title,
                     "artist": artist,
                     "duration_ms": duration_ms,
-                    "direct_url": preview_url,
+                    "url": preview_url,
+                    "codec": "mp3",
+                    "encrypted": False,
+                    "decrypt_key": None,
                     "is_premium": True,
                     "is_preview": True,
                 }
@@ -344,15 +511,18 @@ async def search_and_get_url(
                 "title": title,
                 "artist": artist,
                 "duration_ms": duration_ms,
-                "direct_url": None,
+                "url": None,
+                "codec": None,
+                "encrypted": False,
+                "decrypt_key": None,
                 "is_premium": True,
                 "is_preview": False,
                 "premium_message": f"Трек {title} от {artist} требует подписки Яндекс Плюс",
             }
 
-        # Get working URL
-        direct_url = await get_working_track_url(session, track_id, quality)
-        if not direct_url:
+        # Get working URL with full info
+        download_info = await get_track_download_info(session, track_id, quality)
+        if not download_info:
             _LOGGER.warning(f"Could not get URL for track {track_id}")
             return None
 
@@ -361,10 +531,71 @@ async def search_and_get_url(
             "title": title,
             "artist": artist,
             "duration_ms": duration_ms,
-            "direct_url": direct_url,
+            "url": download_info["url"],
+            "codec": download_info["codec"],
+            "encrypted": download_info["encrypted"],
+            "decrypt_key": download_info.get("decrypt_key"),
             "is_premium": False,
         }
 
     except Exception as e:
         _LOGGER.error(f"search_and_get_url failed: {e}")
         return None
+
+
+async def get_stream_url_for_track(
+    session: YandexSession,
+    track_id: int | str,
+    quality: str = QUALITY_LOSSLESS,
+) -> str | None:
+    """Get a playable stream URL for a track.
+
+    Handles decryption if needed. Returns URL ready for playback.
+    For encrypted tracks, downloads, decrypts, and returns a temporary URL.
+    """
+    info = await get_working_track_url(session, track_id, quality)
+    if not info:
+        return None
+
+    url = info["url"]
+    if not info.get("encrypted"):
+        return url
+
+    # For encrypted tracks, we need to download and decrypt
+    # This is memory-intensive, so we use a temporary file
+    decrypt_key = info.get("decrypt_key")
+    if not decrypt_key:
+        _LOGGER.warning(f"Encrypted track {track_id} but no decrypt key")
+        return url
+
+    try:
+        import tempfile
+        import aiohttp
+
+        # Download encrypted data
+        async with aiohttp.ClientSession() as dl_session:
+            async with dl_session.get(url) as resp:
+                if resp.status != 200:
+                    _LOGGER.warning(f"Failed to download encrypted track: {resp.status}")
+                    return url
+                encrypted_data = await resp.read()
+
+        # Decrypt
+        decrypted_data = await decrypt_yandex_audio(encrypted_data, decrypt_key)
+
+        # Save to temp file
+        ext = info.get("codec", "mp3")
+        with tempfile.NamedTemporaryFile(
+            suffix=f".{ext}",
+            prefix="yandex_",
+            delete=False,
+        ) as f:
+            f.write(decrypted_data)
+            temp_path = f.name
+
+        _LOGGER.info(f"Decrypted track {track_id} to {temp_path}")
+        return temp_path
+
+    except Exception as e:
+        _LOGGER.error(f"Failed to decrypt track {track_id}: {e}")
+        return url

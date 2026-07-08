@@ -62,9 +62,11 @@
       },
       "music_assistant": {
         "title": "Music Assistant",
-        "description": "Интеграция с Music Assistant для воспроизведения музыки из вашей библиотеки\n\nНайдено MA плееров: {ma_count}\nНайдено колонок Яндекс: {speaker_count}",
+        "description": "{info}",
         "data": {
           "enabled": "Включено",
+          "ma_url": "URL MA (если не обнаружен автоматически)",
+          "ma_token": "Токен MA (Bearer token)",
           "ma_player": "MA плеер",
           "yandex_speaker": "Колонка Яндекс",
           "announce": "Объявлять название",

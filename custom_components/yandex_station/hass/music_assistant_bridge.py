@@ -1,5 +1,7 @@
 """Music Assistant integration for Yandex Station."""
 import logging
+import time
+from collections import OrderedDict
 from homeassistant.core import HomeAssistant
 from ..core.const import DOMAIN
 
@@ -10,6 +12,43 @@ MA_API_PLAY_MEDIA = "/api/players/{player_id}/play_media"
 MA_API_COMMAND = "/api/command"
 MA_API_PLAYERS = "/api/players"
 
+# Cache settings
+CACHE_MAX_SIZE = 100
+CACHE_TTL = 300  # 5 minutes
+
+
+class LRUCache:
+    """Simple LRU cache with TTL for search results."""
+
+    def __init__(self, max_size=CACHE_MAX_SIZE, ttl=CACHE_TTL):
+        self._cache = OrderedDict()
+        self._max_size = max_size
+        self._ttl = ttl
+
+    def get(self, key: str):
+        """Get cached value if not expired."""
+        if key not in self._cache:
+            return None
+        value, timestamp = self._cache[key]
+        if time.time() - timestamp > self._ttl:
+            del self._cache[key]
+            return None
+        # Move to end (most recently used)
+        self._cache.move_to_end(key)
+        return value
+
+    def put(self, key: str, value):
+        """Store value in cache."""
+        if key in self._cache:
+            self._cache.move_to_end(key)
+        self._cache[key] = (value, time.time())
+        if len(self._cache) > self._max_size:
+            self._cache.popitem(last=False)
+
+    def clear(self):
+        """Clear cache."""
+        self._cache.clear()
+
 
 class MusicAssistantBridge:
     def __init__(self, hass: HomeAssistant):
@@ -18,6 +57,7 @@ class MusicAssistantBridge:
         self._options = {}
         self._active_ma_players = {}  # speaker_entity_id -> ma_entity_id
         self._direct_player_cache = {}  # player_id -> {name, state, raw}
+        self._search_cache = LRUCache()  # Cache for search results
 
     def load_options(self, config_entry):
         self._options = config_entry.options.get("music_assistant", {})
@@ -323,7 +363,6 @@ class MusicAssistantBridge:
             _LOGGER.debug(f"Failed to apply playback settings: {e}")
 
     async def search_and_play(self, speaker_entity_id, artist=None, track=None, request_type="track", announce=True):
-        import time
         now = time.time()
         last_search = self._last_search_time.get(speaker_entity_id, 0)
         if now - last_search < MIN_SEARCH_INTERVAL:
@@ -340,6 +379,14 @@ class MusicAssistantBridge:
             query = track
         else:
             return False
+
+        # Check cache for recent identical queries
+        cache_key = f"{request_type}:{query.lower().strip()}"
+        cached = self._search_cache.get(cache_key)
+        if cached is not None:
+            _LOGGER.info(f"MA play: cache hit for '{query}'")
+            return cached
+
         _LOGGER.info(f"MA play: type={request_type}, query={query}")
 
         # Direct API path: no HA entity needed
@@ -367,10 +414,14 @@ class MusicAssistantBridge:
             if ok:
                 await self._apply_playback_settings(ma_entity)
                 self._active_ma_players[speaker_entity_id] = ma_entity
+                # Cache successful result
+                self._search_cache.put(cache_key, True)
 
             return ok
         except Exception as e:
             _LOGGER.error(f"MA play failed: {e}")
+            # Cache negative result briefly to avoid retries
+            self._search_cache.put(cache_key, False)
             return False
 
     async def _search_and_play_direct(self, speaker_entity_id, artist, track,

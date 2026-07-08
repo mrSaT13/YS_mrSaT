@@ -1,4 +1,61 @@
 # Thanks to: https://github.com/iswitch/ha-yandex-icons
+# Platform capabilities - what each model supports
+PLATFORM_CAPABILITIES: dict[str, dict] = {
+    # Яндекс Станции
+    "yandexstation": {"screen": True, "hdmi": True, "bluetooth": True, "zigbee": False, "microphone": True, "camera": False},
+    "yandexstation_2": {"screen": True, "hdmi": True, "bluetooth": True, "zigbee": False, "microphone": True, "camera": False},
+    "yandexmini": {"screen": False, "hdmi": False, "bluetooth": True, "zigbee": False, "microphone": True, "camera": False},
+    "yandexmini_2": {"screen": False, "hdmi": False, "bluetooth": True, "zigbee": False, "microphone": True, "camera": False},
+    "bergamot": {"screen": False, "hdmi": False, "bluetooth": True, "zigbee": False, "microphone": True, "camera": False},
+    "yandexmicro": {"screen": False, "hdmi": False, "bluetooth": True, "zigbee": False, "microphone": True, "camera": False},
+    "plum": {"screen": False, "hdmi": False, "bluetooth": True, "zigbee": False, "microphone": True, "camera": False},
+    "yandexmidi": {"screen": False, "hdmi": False, "bluetooth": True, "zigbee": True, "microphone": True, "camera": False},
+    "cucumber": {"screen": False, "hdmi": False, "bluetooth": True, "zigbee": True, "microphone": True, "camera": False},
+    "chiron": {"screen": True, "hdmi": True, "bluetooth": True, "zigbee": True, "microphone": True, "camera": False},
+    "orion": {"screen": True, "hdmi": True, "bluetooth": True, "zigbee": False, "microphone": True, "camera": False},
+    # ТВ модули
+    "yandexmodule": {"screen": True, "hdmi": True, "bluetooth": True, "zigbee": False, "microphone": True, "camera": False},
+    "yandexmodule_2": {"screen": True, "hdmi": True, "bluetooth": True, "zigbee": False, "microphone": True, "camera": False},
+    "yandex_tv": {"screen": True, "hdmi": True, "bluetooth": True, "zigbee": False, "microphone": True, "camera": False},
+    "goya": {"screen": True, "hdmi": True, "bluetooth": True, "zigbee": False, "microphone": True, "camera": False},
+    "magritte": {"screen": True, "hdmi": True, "bluetooth": True, "zigbee": False, "microphone": True, "camera": False},
+    "monet": {"screen": True, "hdmi": True, "bluetooth": True, "zigbee": False, "microphone": True, "camera": False},
+    # Камеры
+    "mike": {"screen": False, "hdmi": False, "bluetooth": False, "zigbee": False, "microphone": True, "camera": True},
+}
+
+
+def get_capabilities(platform: str) -> dict:
+    """Get capabilities for a platform, with sensible defaults."""
+    defaults = {"screen": False, "hdmi": False, "bluetooth": False, "zigbee": False, "microphone": True, "camera": False}
+    return PLATFORM_CAPABILITIES.get(platform, defaults)
+
+
+def has_screen(platform: str) -> bool:
+    """Check if device has a screen."""
+    return get_capabilities(platform)["screen"]
+
+
+def has_hdmi(platform: str) -> bool:
+    """Check if device has HDMI output."""
+    return get_capabilities(platform)["hdmi"]
+
+
+def has_bluetooth(platform: str) -> bool:
+    """Check if device has Bluetooth."""
+    return get_capabilities(platform)["bluetooth"]
+
+
+def has_zigbee(platform: str) -> bool:
+    """Check if device has Zigbee hub."""
+    return get_capabilities(platform)["zigbee"]
+
+
+def has_camera(platform: str) -> bool:
+    """Check if device has camera."""
+    return get_capabilities(platform)["camera"]
+
+
 QUASAR_INFO: dict[str, list] = {
     # колонки Яндекса
     "yandexstation": ["yandex:station", "Яндекс", "Станция (2018)"],
