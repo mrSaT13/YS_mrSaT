@@ -25,6 +25,7 @@ class YandexGlagol:
     # next_ping_ts = 0
     # keep_task: Task = None
     update_handler: Callable = None
+    voice_command_handler: Callable = None
 
     waiters: Dict[str, Future] = {}
     last_send_text: str = None
@@ -185,6 +186,19 @@ class YandexGlagol:
                             _LOGGER.debug(f"Response error: {e}")
 
                     self.waiters[request_id].set_result(result)
+
+                # Detect voice commands from vinsResponse (not from our sendText)
+                if vinsResponse := data.get("vinsResponse"):
+                    try:
+                        if payload := vinsResponse.get("payload"):
+                            response = payload.get("response", {})
+                        else:
+                            response = vinsResponse.get("response", {})
+                        text = response.get("text", "")
+                        if text and self.voice_command_handler:
+                            asyncio.create_task(self.voice_command_handler(text))
+                    except Exception:
+                        pass
 
                 self.update_handler(data)
 

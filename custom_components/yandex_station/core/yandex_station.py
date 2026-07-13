@@ -321,6 +321,7 @@ class YandexStationBase(MediaBrowser, RestoreEntity):
         if not self.glagol:
             self.glagol = YandexGlagol(self.quasar.session, self.device)
             self.glagol.update_handler = self.async_set_state
+            self.glagol.voice_command_handler = self._voice_music_handler
 
         await self.glagol.start_or_restart()
 
@@ -1204,6 +1205,63 @@ class YandexStationBase(MediaBrowser, RestoreEntity):
         except Exception as e:
             _LOGGER.debug(f"Direct bypass failed: {e}")
             return False
+
+    async def _voice_music_handler(self, text: str):
+        """Intercept voice commands and play music via MA if Yandex can't."""
+        # Skip if MA is not enabled
+        try:
+            from ..hass.music_assistant_bridge import get_bridge
+            bridge = get_bridge(self.hass)
+            if not bridge.is_enabled():
+                return
+        except Exception:
+            return
+
+        text_lower = text.lower()
+
+        music_keywords = [
+            "включи", "включай", "играй", "проиграй", "запусти",
+            "поставь", "воспроизведи", "музык", "трек", "песню",
+            "песня", "артист", "исполнител", "альбом", "плейлист",
+            "радио", "radio", "найди", "найти",
+        ]
+
+        if not any(kw in text_lower for kw in music_keywords):
+            return
+
+        query = text_lower
+        for kw in ["включи", "включай", "играй", "проиграй", "запусти",
+                    "поставь", "воспроизведи", "музыку", "трек", "песню",
+                    "песня", "артиста", "исполнителя", "альбом", "плейлист",
+                    "радио", "найди", "найти"]:
+            query = query.replace(kw, "")
+        query = query.strip().strip(",.!?")
+
+        if not query or len(query) < 2:
+            return
+
+        _LOGGER.info(f"Voice music detected: '{query}' — redirecting to MA")
+
+        # Wait briefly for Yandex to start processing
+        await asyncio.sleep(0.5)
+
+        # Stop Yandex to prevent "subscription needed" message
+        try:
+            if self.glagol:
+                await self.glagol.send({"command": "stop"})
+        except Exception:
+            pass
+
+        # Play via MA
+        try:
+            await bridge.search_and_play(
+                self.entity_id,
+                artist=query,
+                request_type="artist",
+                announce=True,
+            )
+        except Exception as e:
+            _LOGGER.debug(f"MA voice playback failed: {e}")
 
     def _get_active_ma_player(self):
         """Check if MA is currently playing and return its entity_id, or None.
