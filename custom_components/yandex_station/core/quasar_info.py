@@ -13,13 +13,18 @@ PLATFORM_CAPABILITIES: dict[str, dict] = {
     "cucumber": {"screen": False, "hdmi": False, "bluetooth": True, "zigbee": True, "microphone": True, "camera": False},
     "chiron": {"screen": True, "hdmi": True, "bluetooth": True, "zigbee": True, "microphone": True, "camera": False},
     "orion": {"screen": True, "hdmi": True, "bluetooth": True, "zigbee": False, "microphone": True, "camera": False},
+    "mango": {"screen": False, "hdmi": False, "bluetooth": True, "zigbee": False, "microphone": True, "camera": False},
     # ТВ модули
     "yandexmodule": {"screen": True, "hdmi": True, "bluetooth": True, "zigbee": False, "microphone": True, "camera": False},
     "yandexmodule_2": {"screen": True, "hdmi": True, "bluetooth": True, "zigbee": False, "microphone": True, "camera": False},
     "yandex_tv": {"screen": True, "hdmi": True, "bluetooth": True, "zigbee": False, "microphone": True, "camera": False},
     "goya": {"screen": True, "hdmi": True, "bluetooth": True, "zigbee": False, "microphone": True, "camera": False},
     "magritte": {"screen": True, "hdmi": True, "bluetooth": True, "zigbee": False, "microphone": True, "camera": False},
+    "magritte_2": {"screen": True, "hdmi": True, "bluetooth": True, "zigbee": False, "microphone": True, "camera": False},
     "monet": {"screen": True, "hdmi": True, "bluetooth": True, "zigbee": False, "microphone": True, "camera": False},
+    "monet_2": {"screen": True, "hdmi": True, "bluetooth": True, "zigbee": False, "microphone": True, "camera": False},
+    "levitan": {"screen": True, "hdmi": True, "bluetooth": True, "zigbee": False, "microphone": True, "camera": False},
+    "malevich": {"screen": True, "hdmi": True, "bluetooth": True, "zigbee": False, "microphone": True, "camera": False},
     # Камеры
     "mike": {"screen": False, "hdmi": False, "bluetooth": False, "zigbee": False, "microphone": True, "camera": True},
 }
@@ -69,14 +74,19 @@ QUASAR_INFO: dict[str, list] = {
     "cucumber": ["yandex:station-midi", "Яндекс", "Станция Миди (2023)"],  # zigbee
     "chiron": ["yandex:station-duo-max", "Яндекс", "Станция Дуо Макс (2023)"],  # zigbee
     "orion": ["yandex:station-max", "Яндекс", "Станция 3 (2025)"],
+    "mango": ["yandex:jbl-link-portable", "Яндекс", "Станция Стрит (2025)"],
     # платформа Яндекс.ТВ (без облачного управления!)
     "yandexmodule": ["yandex:module", "Яндекс", "Модуль (2019)"],
     "yandexmodule_2": ["yandex:module-2", "Яндекс", "Модуль 2 (2021)"],
     "yandex_tv": ["mdi:television-classic", "Unknown", "ТВ с Алисой"],
-    # ТВ с Алисой
+    # ТВ с Алисой (неизвестные модели: ТВ Станция Про QLED, ТВ Станция MiniLED)
     "goya": ["mdi:television-classic", "Яндекс", "ТВ (2022)"],
-    "magritte": ["mdi:television-classic", "Яндекс", "ТВ Станция (2023)"],
-    "monet": ["mdi:television-classic", "Яндекс", "ТВ Станция Бейсик (2024)"],
+    "magritte": ["mdi:television-classic", "Яндекс", "ТВ Станция LED (2023)"],
+    "magritte_2": ["mdi:television-classic", "Яндекс", "ТВ Станция QLED (2025)"],
+    "monet": ["mdi:television-classic", "Яндекс", "ТВ Станция Бейсик LED (2024)"],
+    "monet_2": ["mdi:television-classic", "Яндекс", "ТВ Станция Бейсик QLED (2025)"],
+    "levitan": ["mdi:television-classic", "Яндекс", "ТВ Станция MiniLED (2026)"],
+    "malevich": ["mdi:television-classic", "Яндекс", "ТВ Станция Про MiniLED (2025)"],
     # колонки НЕ Яндекса
     "lightcomm": ["yandex:dexp-smartbox", "DEXP", "Smartbox"],
     "elari_a98": ["yandex:elari-smartbeat", "Elari", "SmartBeat"],
@@ -101,5 +111,20 @@ def has_quasar(device: dict) -> bool:
         if info["platform"] in {"saturn", "mike"}:
             return False  # skip non speakers
         return True
+
+    return False
+
+
+def is_tv(device: dict) -> bool:
+    if info := device.get("quasar_info"):
+        return info["platform"] in {
+            "goya",
+            "magritte",
+            "magritte_2",
+            "monet",
+            "monet_2",
+            "levitan",
+            "malevich",
+        }
 
     return False

@@ -81,6 +81,9 @@ class YandexLight(LightEntity, YandexEntity):
         if self.on_instance in capabilities:
             self._attr_is_on = capabilities[self.on_instance]
 
+        if self.on_instance is None:
+            self._attr_is_on = bool(self.brightness)
+
         if "brightness" in capabilities:
             value = capabilities["brightness"]
             self._attr_brightness = (
@@ -158,10 +161,12 @@ class YandexLight(LightEntity, YandexEntity):
             key = "color" if "value" in color else "scene"
             payload[key] = color["id"]
 
-        if not payload:
+        if not payload and self.on_instance:
             payload[self.on_instance] = True
 
-        await self.device_actions(**payload)
+        if payload:
+            await self.device_actions(**payload)
 
     async def async_turn_off(self, **kwargs):
-        await self.device_action(self.on_instance, False)
+        if self.on_instance:
+            await self.device_action(self.on_instance, False)

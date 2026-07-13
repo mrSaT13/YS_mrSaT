@@ -568,6 +568,8 @@ class YandexQuasar(Dispatcher):
             if dt > 5:
                 # try to get history once more
                 if retries:
+                    # 3 - 0.5s, 2 - 1.5s, 1 - 2.5s, 0 - skip
+                    await asyncio.sleep(3.5 - retries)
                     await self.get_voice_trigger(retries - 1)
                 return
 

@@ -271,8 +271,9 @@ class YandexSession(BasicSession):
                 f"{host}/auth/session/", params=payload, allow_redirects=False,
                 proxy=self.proxy, ssl=self.ssl,
             )
-            if r.status != 302:
-                _LOGGER.error(f"Expected 302 redirect, got {r.status}")
+            location = r.headers.get("Location")
+            if not location or "/auth/finish" not in location:
+                _LOGGER.error(f"Expected redirect to /auth/finish, got {location}")
                 return False
                 
             # Copy cookies from temp session to main session

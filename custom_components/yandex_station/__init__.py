@@ -29,6 +29,7 @@ from homeassistant.helpers import (
     config_validation as cv,
     device_registry as dr,
 )
+from homeassistant.util.ssl import SSLCipherList
 from homeassistant.helpers.event import async_track_time_interval
 
 from .core import stream, utils
@@ -149,25 +150,23 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     async def update_cookie_and_token(**kwargs):
         hass.config_entries.async_update_entry(entry, data=kwargs)
 
-    session = ac.async_create_clientsession(hass)
+    session = ac.async_create_clientsession(hass, ssl_cipher=SSLCipherList.INTERMEDIATE)
     yandex = YandexSession(session, **entry.data)
     yandex.add_update_listener(update_cookie_and_token)
 
     try:
-        ok = await yandex.refresh_cookies()
+        if not await yandex.refresh_cookies():
+            hass.components.persistent_notification.async_create(
+                "Необходимо заново авторизоваться в Яндексе. Для этого [добавьте "
+                "новую интеграцию](/config/integrations) с тем же логином.",
+                title="Yandex.Station",
+            )
+            return False
+
+        quasar = YandexQuasar(yandex)
+        await quasar.init()
     except Exception as e:
         raise ConfigEntryNotReady from e
-
-    if not ok:
-        hass.components.persistent_notification.async_create(
-            "Необходимо заново авторизоваться в Яндексе. Для этого [добавьте "
-            "новую интеграцию](/config/integrations) с тем же логином.",
-            title="Yandex.Station",
-        )
-        return False
-
-    quasar = YandexQuasar(yandex)
-    await quasar.init()
 
     await hass_utils.load_fake_devices(hass, quasar)
 
