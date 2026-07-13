@@ -173,6 +173,9 @@ class YandexStationBase(MediaBrowser, RestoreEntity):
     # true of false if device has HDMI
     hdmi_audio: Optional[bool] = None
 
+    is_on: bool = None
+    """Yandex TV screen state. None if device don't have this state."""
+
     glagol: YandexGlagol = None
 
     def __init__(self, quasar: YandexQuasar, device: dict):
@@ -220,6 +223,8 @@ class YandexStationBase(MediaBrowser, RestoreEntity):
             self.entity_id += "yandex_station"
         self.entity_id += f"_{slugify(self._attr_unique_id)}"
 
+        self.internal_update_is_on(device)
+
         quasar.subscribe_update(device["id"], self.on_update)
 
     @property
@@ -228,6 +233,9 @@ class YandexStationBase(MediaBrowser, RestoreEntity):
 
         if self.local_state:
             attrs["alice_state"] = self.local_state["aliceState"]
+
+        if self.is_on is not None:
+            attrs["is_on"] = self.is_on
 
         # Voice command attributes
         if self.last_voice_command:
@@ -258,7 +266,19 @@ class YandexStationBase(MediaBrowser, RestoreEntity):
 
         return attrs if attrs else None
 
+    def internal_update_is_on(self, device: dict):
+        """Update is_on attribute for devices with this state."""
+        for i in device.get("capabilities", []):
+            if (s := i.get("state")) and s.get("instance") == "on":
+                self.is_on = s["value"]
+                if self.hass:
+                    self.async_write_ha_state()
+                return
+
     def on_update(self, device: dict):
+        if self.is_on is not None:
+            self.internal_update_is_on(device)
+
         if not self.hass:
             return
 
@@ -1404,7 +1424,9 @@ class YandexStationBase(MediaBrowser, RestoreEntity):
                 _LOGGER.warning(f"Failed to next track on {self.name}: {resp}")
 
     async def async_turn_on(self):
-        if self.local_state:
+        if self.is_on is not None:
+            await self.quasar.device_actions(self.device, on=True)
+        elif self.local_state:
             await self.glagol.send(
                 utils.update_form("personal_assistant.scenarios.player_continue")
             )
@@ -1412,7 +1434,9 @@ class YandexStationBase(MediaBrowser, RestoreEntity):
             await self.async_media_play()
 
     async def async_turn_off(self):
-        if self.local_state:
+        if self.is_on is not None:
+            await self.quasar.device_actions(self.device, on=False)
+        elif self.local_state:
             await self.glagol.send(
                 utils.update_form("personal_assistant.scenarios.quasar.go_home")
             )
