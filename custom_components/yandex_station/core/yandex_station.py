@@ -487,6 +487,23 @@ class YandexStationBase(MediaBrowser, RestoreEntity):
         for k, v in data.items():
             await self.quasar.set_account_config(k, v)
 
+    def _is_radio_player_state(self) -> bool:
+        """Detect the upstream #800/#797 bug: radio_play silently degrades to FM radio.
+
+        Returns True when the current playerState looks like the FM radio
+        player (playerType/playlistType == FmRadio) rather than a fresh
+        stream we just kicked off via radio_play.
+        """
+        if not self.local_state:
+            return False
+        player = self.local_state.get("playerState")
+        if not player:
+            return False
+        return (
+            player.get("playerType") == "FmRadio"
+            or player.get("playlistType") == "FmRadio"
+        )
+
     def _check_set_alice_volume(self, volume: int):
         # если уже есть активная громкость, или громкость голоса равна текущей
         # громкости колонки - ничего не делаем
@@ -1245,14 +1262,9 @@ class YandexStationBase(MediaBrowser, RestoreEntity):
         # Wait briefly for Yandex to start processing
         await asyncio.sleep(0.5)
 
-        # Stop Yandex to prevent "subscription needed" message
-        try:
-            if self.glagol:
-                await self.glagol.send({"command": "stop"})
-        except Exception:
-            pass
-
-        # Play via MA
+        # Play via MA (without stopping Yandex — it was the cause of
+        # accidental interruptions on every Alice response containing
+        # words like "включи"/"найди"/"радио")
         try:
             await bridge.search_and_play(
                 self.entity_id,
@@ -1565,6 +1577,7 @@ class YandexStationBase(MediaBrowser, RestoreEntity):
             return
 
         if self.local_state:
+            radio_fallback: dict | None = None
             if media_source.is_media_source_id(media_id):
                 sourced_media = await media_source.async_resolve_media(
                     self.hass, media_id, self.entity_id
@@ -1573,11 +1586,19 @@ class YandexStationBase(MediaBrowser, RestoreEntity):
                 payload = utils.get_stream_url(
                     sourced_media.url, media_type, extra.get("metadata")
                 )
+                if payload and payload.get("command") == "externalCommandBypass":
+                    radio_fallback = utils.get_playmusic_url_payload(
+                        sourced_media.url, media_type, extra.get("metadata")
+                    )
 
             elif "https://" in media_id or "http://" in media_id:
                 payload = utils.get_stream_url(
                     media_id, media_type, extra.get("metadata")
                 )
+                if payload and payload.get("command") == "externalCommandBypass":
+                    radio_fallback = utils.get_playmusic_url_payload(
+                        media_id, media_type, extra.get("metadata")
+                    )
                 if not payload:
                     payload = await utils.get_media_payload(
                         self.quasar.session, media_id
@@ -1642,6 +1663,22 @@ class YandexStationBase(MediaBrowser, RestoreEntity):
                 return
 
             await self.glagol.send(payload)
+
+            # Workaround for upstream #800/#797: radio_play sometimes falls
+            # back to the FM radio player instead of streaming the URL.
+            # If we ended up in radio mode, retry via playMusic/url which
+            # routes through the regular music player.
+            if radio_fallback is not None:
+                try:
+                    await asyncio.sleep(0.7)
+                    if self._is_radio_player_state():
+                        _LOGGER.warning(
+                            "radio_play fell back to FM radio player; "
+                            "retrying via playMusic/url"
+                        )
+                        await self.glagol.send(radio_fallback)
+                except Exception as e:
+                    _LOGGER.debug(f"radio_play fallback skipped: {e}")
 
         else:
             if media_type.startswith(("text:", "dialog:")):

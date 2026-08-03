@@ -116,6 +116,71 @@ class YandexSession(BasicSession):
         """Listeners to handle automatic cookies update."""
         self._update_listeners.append(coro)
 
+    async def request_device_code(
+        self,
+        device_id: str = None,
+        device_name: str = "YandexStation HA",
+        client_id: str = "23cabbbdc6cd418abb4b39c32c41195d",
+    ) -> dict:
+        """Start OAuth Device Flow against https://oauth.yandex.ru/device/code.
+
+        Returns the raw response (device_code, user_code, verification_url,
+        expires_in, interval). The caller must keep the device_code and poll
+        poll_device_token() until the user confirms on the verification page.
+        """
+        import secrets
+        import string
+
+        if not device_id:
+            alphanum = string.ascii_letters + string.digits
+            device_id = "".join(secrets.choice(alphanum) for _ in range(10))
+
+        r = await self._post(
+            "https://oauth.yandex.ru/device/code",
+            data={
+                "client_id": client_id,
+                "device_id": device_id,
+                "device_name": device_name,
+            },
+        )
+        assert r.ok, await r.text()
+        return await r.json()
+
+    async def poll_device_token(
+        self,
+        device_code: str,
+        client_id: str = "23cabbbdc6cd418abb4b39c32c41195d",
+        client_secret: str = "53bc75238f0c4d08a118e51fe9203300",
+    ) -> dict:
+        """Single poll of https://oauth.yandex.ru/token.
+
+        Returns:
+            dict on success with keys access_token, refresh_token, expires_in.
+            dict on "authorization_pending" with key "__pending__" = True.
+            dict on terminal error with key "error".
+        """
+        r = await self._post(
+            "https://oauth.yandex.ru/token",
+            data={
+                "grant_type": "device_code",
+                "code": device_code,
+                "client_id": client_id,
+                "client_secret": client_secret,
+            },
+        )
+        text = await r.text()
+        if r.status == 200:
+            return json.loads(text)
+        # OAuth returns 400 with error=authorization_pending while the user
+        # hasn't confirmed yet. Anything else is a real failure.
+        try:
+            data = json.loads(text)
+        except Exception:
+            return {"error": text or f"HTTP {r.status}"}
+        if data.get("error") == "authorization_pending":
+            return {"__pending__": True}
+        return {"error": data.get("error", "unknown"), "error_description": data.get("error_description", "")}
+
     async def get_qr(self) -> str:
         """Get link to QR-code auth."""
         r = await self._get("https://passport.yandex.ru/pwl-yandex")

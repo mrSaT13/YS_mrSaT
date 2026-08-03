@@ -267,8 +267,9 @@ def get_stream_url(
 
     if ext in ("aac", "flac", "m3u8", "mp3", "mp4", "wav"):
         # station can't handle links without extension
+        stream_url = stream.get_url(media_id, ext, 3)
         payload = {
-            "streamUrl": stream.get_url(media_id, ext, 3),
+            "streamUrl": stream_url,
             "force_restart_player": True,
         }
         if metadata:
@@ -286,6 +287,34 @@ def get_stream_url(
         return external_command("draw_led_screen", payload)
 
     return None
+
+
+def get_playmusic_url_payload(
+    media_id: str, media_type: str = None, metadata: dict = None
+) -> dict | None:
+    """Build a playMusic/url command as a fallback for get_stream_url().
+
+    Used to work around #800/#797 where radio_play silently degrades to a
+    radio player. playMusic with type=url is the same audio source but routes
+    through the music player, so it actually plays what was requested.
+    """
+    if media_type and media_type.startswith("stream."):
+        ext = media_type[7:]
+    else:
+        ext = stream.get_ext(media_id)
+    if ext not in ("aac", "flac", "m3u8", "mp3", "mp4", "wav"):
+        return None
+    payload = {
+        "command": "playMusic",
+        "type": "url",
+        "url": stream.get_url(media_id, ext, 3),
+    }
+    if metadata:
+        if title := metadata.get("title"):
+            payload["title"] = title
+        if artist := metadata.get("artist"):
+            payload["artist"] = artist
+    return payload
 
 
 def external_command(name: str, payload: dict | str = None) -> dict:

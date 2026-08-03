@@ -9,6 +9,7 @@
 """
 
 import logging
+import time
 from functools import lru_cache
 
 import homeassistant.helpers.config_validation as cv
@@ -67,6 +68,7 @@ class YandexStationFlowHandler(ConfigFlow, domain=DOMAIN):
                         vol.Required("method", default="qr"): vol.In(
                             {
                                 "qr": "QR-код",
+                                "device": "Код устройства",
                                 "cookies": "Cookies",
                                 "token": "Токен",
                             }
@@ -84,6 +86,22 @@ class YandexStationFlowHandler(ConfigFlow, domain=DOMAIN):
                     "qr_url": qr_url,
                     "qr_data": generate_qr_code(qr_url),
                     "ya_url": "https://passport.yandex.ru/profile",
+                },
+            )
+
+        if method == "device":
+            code = await self.yandex.request_device_code()
+            self._device_code = code["device_code"]
+            self._device_interval = max(int(code.get("interval", 5)), 1)
+            self._device_expires = time.time() + int(code.get("expires_in", 300))
+            self._user_code_display = code["user_code"]
+            self._verification_url_display = code["verification_url"]
+            return self.async_show_form(
+                step_id="device",
+                description_placeholders={
+                    "user_code": code["user_code"],
+                    "verification_url": code["verification_url"],
+                    "expires_in": str(int(code.get("expires_in", 300))),
                 },
             )
 
@@ -135,6 +153,49 @@ class YandexStationFlowHandler(ConfigFlow, domain=DOMAIN):
                 self.cur_step["errors"] = {"base": "token.invalid"}
                 return self.cur_step
             raise
+
+    async def async_step_device(self, user_input=None):
+        """Poll OAuth Device Flow until the user confirms the code on Yandex.
+
+        The form auto-submits (re-shows itself) every `interval` seconds while
+        pending. On success it forwards the access_token to validate_token()
+        so the rest of the flow can treat it like any other x_token.
+        """
+        device_code = getattr(self, "_device_code", None)
+        if not device_code:
+            return self.async_abort(reason="device_code_lost")
+
+        if time.time() > getattr(self, "_device_expires", 0):
+            return self.async_abort(reason="device_code_expired")
+
+        try:
+            result = await self.yandex.poll_device_token(device_code)
+        except Exception as e:
+            _LOGGER.error(f"Device flow poll error: {e}")
+            return self.async_abort(reason="device_poll_failed")
+
+        if result.get("__pending__"):
+            # Re-show the form with a short auto-trigger so HA keeps polling.
+            return self.async_show_form(
+                step_id="device",
+                data_schema=vol.Schema({}),
+                description_placeholders={
+                    "user_code": getattr(self, "_user_code_display", ""),
+                    "verification_url": getattr(self, "_verification_url_display", ""),
+                    "expires_in": str(
+                        max(0, int(getattr(self, "_device_expires", 0) - time.time()))
+                    ),
+                },
+            )
+
+        if "access_token" in result:
+            self._login_method = "Код устройства"
+            resp = await self.yandex.validate_token(result["access_token"])
+            return await self._check_yandex_response(resp)
+
+        # Real error
+        _LOGGER.error(f"Device flow error: {result}")
+        return self.async_abort(reason="device_denied")
 
     async def _check_yandex_response(self, resp: LoginResponse):
         """Check Yandex response. Do not create entry for the same login. Show
