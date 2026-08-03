@@ -1079,6 +1079,17 @@ class YandexStationBase(MediaBrowser, RestoreEntity):
             if not bridge.is_enabled():
                 return
 
+            # Skip FM radio / live streams — they have duration=0 or huge,
+            # and triggering MA fallback for them causes an infinite log
+            # loop every WS tick (~1Hz) when the station is on a radio
+            # stream (see https://github.com/.../issues/...).
+            playlist_type = player_state.get("playlistType", "")
+            player_type = player_state.get("playerType", "")
+            if playlist_type == "FmRadio" or player_type == "FmRadio":
+                return
+            if player_state.get("liveStreamText"):
+                return
+
             # Get artist and track from playerState (resolved by Alice)
             request = bridge.parse_voice_request(player_state)
 

@@ -34,6 +34,7 @@ class YandexGlagol:
         self.session = session
         self.device = device
         self.loop = asyncio.get_event_loop()
+        self._last_log_ts: float = 0.0
 
     def debug(self, text: str):
         _LOGGER.debug(f"{self.device['name']} | {text}")
@@ -157,7 +158,18 @@ class YandexGlagol:
                 data = json.loads(msg.data)
                 fails = 0  # any message - reset fails
 
-                _LOGGER.debug(f"{self.name} <= ws received: state={'state' in data}, vins={'vinsResponse' in data}, player={'playerState' in data.get('state', {})}")
+                # Log only on first message and on meaningful transitions
+                # (vinsResponse / state change). The Yandex Station sends a
+                # state update every ~1s while playing — logging each one
+                # triggers HA's "logging too frequently" warning.
+                has_vins = "vinsResponse" in data
+                if has_vins or self._last_log_ts == 0:
+                    _LOGGER.debug(f"{self.name} <= ws received: state={'state' in data}, vins={has_vins}, player={'playerState' in data.get('state', {})}")
+                    self._last_log_ts = time.time()
+                elif time.time() - self._last_log_ts > 30:
+                    # Heartbeat log every 30s so the WS still shows as alive
+                    _LOGGER.debug(f"{self.name} <= ws heartbeat (state updates flowing)")
+                    self._last_log_ts = time.time()
 
                 request_id = data.get("requestId")
                 if request_id in self.waiters:
