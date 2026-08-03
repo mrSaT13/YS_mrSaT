@@ -179,9 +179,10 @@ class YandexLyricsSensor(SensorEntity):
         )
         if not mp_entity_id:
             return
+        from homeassistant.helpers.event import async_track_state_change_event
         self.async_on_remove(
-            self.hass.helpers.event.async_track_state_change_event(
-                mp_entity_id, self._on_speaker_state
+            async_track_state_change_event(
+                self.hass, mp_entity_id, self._on_speaker_state
             )
         )
         state = self.hass.states.get(mp_entity_id)
