@@ -728,17 +728,41 @@ class YandexStationBase(MediaBrowser, RestoreEntity):
         self._attr_repeat = None
         self._attr_shuffle = None
 
-        if player_state := state.get("playerState"):
-            _LOGGER.debug(f"PlayerState for {self.name}: title='{player_state.get('title')}', type={player_state.get('type')}, playing={state.get('playing')}")
+        self._last_ps_title: str | None = None
+        self._last_ps_type: str | None = None
+        self._last_ps_playing: bool | None = None
+        self._last_ps_log_ts: float = 0.0
 
-            # Log cover information if available
-            if extra := player_state.get("extra"):
-                if cover := extra.get("coverURI"):
-                    _LOGGER.debug(f"Cover: {cover}")
+        if player_state := state.get("playerState"):
+            # Throttle per-tick logging (~1Hz while playing): only log when the
+            # meaningful media info changed, otherwise a heartbeat every 30s so
+            # the integration doesn't trip HA's "logging too frequently" guard.
+            ps_title = player_state.get("title")
+            ps_type = player_state.get("type")
+            ps_playing = state.get("playing")
+            now = time.time()
+            if (
+                ps_title != self._last_ps_title
+                or ps_type != self._last_ps_type
+                or ps_playing != self._last_ps_playing
+                or now - self._last_ps_log_ts > 30
+            ):
+                self._last_ps_title = ps_title
+                self._last_ps_type = ps_type
+                self._last_ps_playing = ps_playing
+                self._last_ps_log_ts = now
+                _LOGGER.debug(
+                    f"PlayerState for {self.name}: title='{ps_title}', type={ps_type}, playing={ps_playing}"
+                )
+
+                # Log cover information if available
+                if extra := player_state.get("extra"):
+                    if cover := extra.get("coverURI"):
+                        _LOGGER.debug(f"Cover: {cover}")
+                    else:
+                        _LOGGER.debug(f"Cover not found in extra")
                 else:
-                    _LOGGER.debug(f"Cover not found in extra")
-            else:
-                _LOGGER.debug(f"No extra data (metadata)")
+                    _LOGGER.debug(f"No extra data (metadata)")
             
             if player_state["hasPrev"]:
                 self._attr_supported_features |= MediaPlayerEntityFeature.PREVIOUS_TRACK
