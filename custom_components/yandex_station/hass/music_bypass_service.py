@@ -140,13 +140,22 @@ async def async_setup_music_bypass(hass, session: YandexSession):
                 ext = "mp3"
 
             # Build the command
-            payload = {
-                "streamUrl": stream_url,
-                "force_restart_player": True,
-                "title": result["title"],
-                "imageUrl": None,  # could add cover art URL here
-            }
-            command = external_command("radio_play", payload)
+            if getattr(entity, "audio_client", False):
+                # New firmware ignores radio_play — use audio_play directive
+                from ..core.utils import audio_play_command
+                command = audio_play_command(
+                    stream_url,
+                    ext,
+                    {"title": result["title"], "subtitle": result["artist"]},
+                )
+            else:
+                payload = {
+                    "streamUrl": stream_url,
+                    "force_restart_player": True,
+                    "title": result["title"],
+                    "imageUrl": None,  # could add cover art URL here
+                }
+                command = external_command("radio_play", payload)
 
             # Send to speaker via Glagol
             if entity.glagol:

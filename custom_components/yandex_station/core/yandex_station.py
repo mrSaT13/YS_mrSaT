@@ -173,6 +173,10 @@ class YandexStationBase(MediaBrowser, RestoreEntity):
     # true of false if device has HDMI
     hdmi_audio: Optional[bool] = None
 
+    # station supports the `audio_play` directive (reported in every local
+    # message), used to play media URLs instead of the legacy `radio_play`
+    audio_client: bool = False
+
     is_on: bool = None
     """Yandex TV screen state. None if device don't have this state."""
 
@@ -599,6 +603,9 @@ class YandexStationBase(MediaBrowser, RestoreEntity):
 
             self.async_write_ha_state()
             return
+
+        if features := data.get("supported_features"):
+            self.audio_client = "audio_client" in features
 
         state = data["state"]
         state.pop("timeSinceLastVoiceActivity", None)
@@ -1208,20 +1215,32 @@ class YandexStationBase(MediaBrowser, RestoreEntity):
 
             # Play via Glagol
             if self.glagol:
-                import json
-                # Build playMusic payload
-                payload = {
-                    "command": "playMusic",
-                    "type": "url",
-                    "url": url,
-                }
-                # Add metadata if available
-                if result.get("title"):
-                    payload["title"] = result["title"]
-                if result.get("artist"):
-                    payload["artist"] = result["artist"]
+                if self.audio_client:
+                    # New firmware ignores radio_play and playMusic/url —
+                    # use the audio_play directive instead.
+                    ext = url.rsplit(".", 1)[-1].lower() if "." in url.rsplit("/", 1)[-1] else "mp3"
+                    if ext not in ("aac", "flac", "m3u8", "mp3", "mp4", "wav"):
+                        ext = "mp3"
+                    command = utils.audio_play_command(
+                        url,
+                        ext,
+                        {"title": result.get("title"), "subtitle": result.get("artist")},
+                    )
+                    resp = await self.glagol.send(command)
+                else:
+                    # Build playMusic payload
+                    payload = {
+                        "command": "playMusic",
+                        "type": "url",
+                        "url": url,
+                    }
+                    # Add metadata if available
+                    if result.get("title"):
+                        payload["title"] = result["title"]
+                    if result.get("artist"):
+                        payload["artist"] = result["artist"]
+                    resp = await self.glagol.send(payload)
 
-                resp = await self.glagol.send(payload)
                 if resp and resp.get("status") == "ok":
                     _LOGGER.info(f"Direct bypass: started playing '{query}'")
                     return True
@@ -1595,7 +1614,10 @@ class YandexStationBase(MediaBrowser, RestoreEntity):
                 )
                 # we use the sourced_media.url to reduce the link size
                 payload = utils.get_stream_url(
-                    sourced_media.url, media_type, extra.get("metadata")
+                    sourced_media.url,
+                    media_type,
+                    extra.get("metadata"),
+                    self.audio_client,
                 )
                 if payload and payload.get("command") == "externalCommandBypass":
                     radio_fallback = utils.get_playmusic_url_payload(
@@ -1604,7 +1626,7 @@ class YandexStationBase(MediaBrowser, RestoreEntity):
 
             elif "https://" in media_id or "http://" in media_id:
                 payload = utils.get_stream_url(
-                    media_id, media_type, extra.get("metadata")
+                    media_id, media_type, extra.get("metadata"), self.audio_client
                 )
                 if payload and payload.get("command") == "externalCommandBypass":
                     radio_fallback = utils.get_playmusic_url_payload(
@@ -1612,7 +1634,7 @@ class YandexStationBase(MediaBrowser, RestoreEntity):
                     )
                 if not payload:
                     payload = await utils.get_media_payload(
-                        self.quasar.session, media_id
+                        self.quasar.session, media_id, self.audio_client
                     )
 
             elif media_type.startswith(("text:", "dialog:")):
@@ -1675,14 +1697,21 @@ class YandexStationBase(MediaBrowser, RestoreEntity):
 
             await self.glagol.send(payload)
 
-            # Workaround for upstream #800/#797: radio_play sometimes falls
-            # back to the FM radio player instead of streaming the URL.
-            # If we ended up in radio mode, retry via playMusic/url which
-            # routes through the regular music player.
-            if radio_fallback is not None:
+            # Workaround for upstream #800/#797: on old firmware radio_play
+            # sometimes falls back to the FM radio player instead of streaming
+            # the URL.  Only applies when the station does NOT advertise
+            # `audio_client` (which we now use via `audio_play` for new
+            # firmware that ignores radio_play params entirely).  Short poll
+            # loop, no retry spam.
+            if radio_fallback is not None and not self.audio_client:
                 try:
-                    await asyncio.sleep(0.7)
-                    if self._is_radio_player_state():
+                    became_radio = False
+                    for _ in range(8):  # 8 * 0.5s = 4s total
+                        await asyncio.sleep(0.5)
+                        if self._is_radio_player_state():
+                            became_radio = True
+                            break
+                    if became_radio:
                         _LOGGER.warning(
                             "radio_play fell back to FM radio player; "
                             "retrying via playMusic/url"

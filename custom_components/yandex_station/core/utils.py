@@ -199,7 +199,9 @@ RE_MEDIA = {
 }
 
 
-async def get_media_payload(session: YandexSession, media_id: str) -> dict | None:
+async def get_media_payload(
+    session: YandexSession, media_id: str, audio_client: bool = False
+) -> dict | None:
     for k, v in RE_MEDIA.items():
         if m := v.search(media_id):
             if k in ("youtube", "kinopoisk", "strm", "yavideo"):
@@ -252,13 +254,48 @@ async def get_media_payload(session: YandexSession, media_id: str) -> dict | Non
                     return None
 
     if ext := await stream.get_content_type(session._session, media_id):
-        return get_stream_url(media_id, "stream." + ext)
+        return get_stream_url(media_id, "stream." + ext, audio_client=audio_client)
 
     return None
 
 
+def audio_play_command(url: str, ext: str, metadata: dict = None) -> dict:
+    """Play any URL via the `audio_play` directive - the same one Yandex cloud
+    uses for music. Station firmware since ~July 2026 ignores the payload of the
+    legacy `radio_play` directive and falls back to a random Yandex radio.
+
+    Station detects the codec from the content, so `format` only has to be a
+    valid enum value: HLS for playlists and MP3 for everything else (verified
+    with real aac/flac/wav files). An unknown value makes the station drop the
+    directive without a single request to the URL.
+    """
+    hls = ext == "m3u8"
+    payload = {
+        "stream": {
+            "url": url,
+            "format": "HLS" if hls else "MP3",
+            # `Track` gives a progress bar and artist, `FmRadio` - a radio UI
+            "type": "FmRadio" if hls else "Track",
+            "offset_ms": 0,
+        },
+        "set_pause": False,
+    }
+    if metadata:
+        media = {}
+        if title := metadata.get("title"):
+            media["title"] = title
+        if subtitle := metadata.get("subtitle"):
+            media["subtitle"] = subtitle
+        # station reports it back as `coverURI`, which is always schemeless
+        if (image := metadata.get("imageUrl")) and image.startswith("https://"):
+            media["art_image_url"] = image[8:]
+        if media:
+            payload["metadata"] = media
+    return external_command("audio_play", payload)
+
+
 def get_stream_url(
-    media_id: str, media_type: str, metadata: dict = None
+    media_id: str, media_type: str, metadata: dict = None, audio_client: bool = False
 ) -> dict | None:
     if media_type.startswith("stream."):
         ext = media_type[7:]  # manual file extension
@@ -268,6 +305,10 @@ def get_stream_url(
     if ext in ("aac", "flac", "m3u8", "mp3", "mp4", "wav"):
         # station can't handle links without extension
         stream_url = stream.get_url(media_id, ext, 3)
+
+        if audio_client:
+            return audio_play_command(stream_url, ext, metadata)
+
         payload = {
             "streamUrl": stream_url,
             "force_restart_player": True,
